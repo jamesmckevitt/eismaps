@@ -14,45 +14,154 @@ import sunpy.sun.constants
 from sunpy.physics.differential_rotation import solar_rotate_coordinate
 from sunpy.coordinates import Helioprojective, propagate_with_solar_surface, RotatedSunFrame
 from sunpy.coordinates import SphericalScreen
+from typing import List, Optional, Literal, Union, TYPE_CHECKING
 
-def safe_load_map(map_file):
+if TYPE_CHECKING:
+    import sunpy.map
+
+def _combine_data_max_abs(combined_data: np.ndarray, new_data: np.ndarray) -> np.ndarray:
+    """
+    Combine data using maximum absolute value method.
+    
+    For overlapping pixels, keeps the value with the largest absolute magnitude.
+    This preserves the sign of the strongest signal (useful for Doppler velocities).
+    """
+    # Handle NaN cases first
+    combined_has_data = ~np.isnan(combined_data)
+    new_has_data = ~np.isnan(new_data)
+    
+    # Where combined is NaN, use new data
+    # Where new is NaN, keep combined data  
+    # Where both have data, use the one with larger absolute value
+    result = np.where(
+        ~combined_has_data, new_data,
+        np.where(
+            ~new_has_data, combined_data,
+            np.where(
+                np.abs(combined_data) >= np.abs(new_data), 
+                combined_data, 
+                new_data
+            )
+        )
+    )
+    return result
+
+
+def _combine_data_mean(combined_data: np.ndarray, new_data: np.ndarray) -> np.ndarray:
+    """
+    Combine data by accumulating for later averaging.
+    
+    Sums the values where both exist, or uses the single value where only one exists.
+    """
+    combined_has_data = ~np.isnan(combined_data)
+    new_has_data = ~np.isnan(new_data)
+    
+    return np.where(
+        ~combined_has_data, new_data,
+        np.where(
+            ~new_has_data, combined_data,
+            combined_data + new_data
+        )
+    )
+
+
+def _combine_data_with_fill(combined_data: np.ndarray, new_data: np.ndarray, fill_value: float) -> np.ndarray:
+    """
+    Combine data by setting overlapping regions to a specified fill value.
+    
+    Where both have data, set to fill_value. Otherwise use the single valid value.
+    """
+    combined_has_data = ~np.isnan(combined_data)
+    new_has_data = ~np.isnan(new_data)
+    
+    return np.where(
+        ~combined_has_data, new_data,
+        np.where(
+            ~new_has_data, combined_data,
+            fill_value  # Both have data - set to fill_value
+        )
+    )
+
+
+def _update_overlap_mask(overlap_mask: np.ndarray, new_data: np.ndarray) -> np.ndarray:
+    """Update overlap mask by incrementing where new data is valid."""
+    return np.where(~np.isnan(new_data), overlap_mask + 1, overlap_mask)
+
+
+def make_helioprojective_map(
+    map_files: List[str], 
+    overlap: Union[Literal['max', 'mean'], float],
+    apply_rotation: bool = True, 
+    preserve_limb: bool = True, 
+    drag_rotate: bool = False,
+    algorithm: Literal['exact', 'interpolation', 'adaptive'] = 'exact'
+):
+    """
+    Create a helioprojective full disk map from multiple EIS raster maps.
+    
+    This function combines multiple EIS raster maps into a single full disk map 
+    in helioprojective coordinates. Different methods are available for handling 
+    overlapping regions between maps.
+    
+    Parameters
+    ----------
+    map_files : List[str]
+        List of file paths to EIS maps to be combined. Must not be empty.
+        The first map determines the reference time and coordinate system.
+    overlap : {'max', 'mean'} or float
+        Method for handling overlapping regions:
+        - 'max': Use value with maximum absolute magnitude (for Doppler velocities)
+        - 'mean': Average overlapping values
+        - Any numeric value (e.g., np.nan, 0, -999): Set overlapping regions to this value
+    apply_rotation : bool, default=True
+        Whether to apply differential rotation correction to align maps in time.
+    preserve_limb : bool, default=True
+        Whether to preserve off-limb data or crop to solar disk.
+    drag_rotate : bool, default=False
+        If True, use drag-based rotation model instead of Howard model.
+    algorithm : {'exact', 'interpolation'}, default='exact'
+        Reprojection algorithm to use:
+        - 'exact': Exact reprojection (slower but more accurate)
+        - 'interpolation': Interpolation-based reprojection (faster but less accurate)
+        - 'adaptive': Adaptive reprojection (adaptive, anti-aliased resampling algorithm, with optional flux conservation)
+        
+    Returns
+    -------
+    tuple of (sunpy.map.Map, sunpy.map.Map) or (None, None)
+        A tuple containing:
+        - The combined full disk map (or None if processing failed)
+        - The overlap count map showing how many maps contributed to each pixel
+        
+    Notes
+    -----
+    For Doppler velocity measurements, the 'max' overlap method selects the 
+    velocity with the strongest magnitude (largest |velocity|), preserving
+    the sign to maintain the direction information.
+    
+    Examples
+    --------
+    >>> map_files = ['map1.fits', 'map2.fits', 'map3.fits']
+    >>> fd_map, overlap_map = make_helioprojective_map(map_files, 'max')
+    >>> 
+    >>> # Using interpolation for faster processing
+    >>> fd_map, overlap_map = make_helioprojective_map(map_files, 'max', algorithm='interpolation')
+    >>>
+    >>> # Set overlapping regions to NaN
+    >>> fd_map, overlap_map = make_helioprojective_map(map_files, np.nan)
+    >>>
+    >>> # Set overlapping regions to a specific value
+    >>> fd_map, overlap_map = make_helioprojective_map(map_files, -999.0)
+    """
+    # Input validation
+    if not map_files:
+        raise ValueError("map_files cannot be empty")
+    
+    # Load the first map to establish the reference frame
     try:
-        map = sunpy.map.Map(map_file)
-    except:
-        print(f"Error loading map {map_file}. Skipping.")
-        map = None
-    return map
-
-def make_helioprojective_map(map_files, save_dir, wavelength, measurement, overlap, apply_rotation=True, preserve_limb=True, drag_rotate=False, save_fit=False, save_plot=False, plot_ext='png', plot_dpi=300, skip_done=True):
-    """
-    Make a helioprojective full disk map from a list of maps.
-    """
-
-    first_map = safe_load_map(map_files[0])
-    if first_map is None:
-        return
-
-    map_file_datetime = os.path.basename(map_files[0]).split('.')[0].replace('eis_', '')
-    output_filename = f"eis_{map_file_datetime}.{wavelength}.{measurement}.fd_hp"
-
-    if skip_done:
-        if os.path.exists(os.path.join(save_dir, f"{output_filename}.fits")):
-            fit_exists = True
-        else:
-            fit_exists = False
-        if save_plot and os.path.exists(os.path.join(save_dir, f"{output_filename}.{plot_ext}")):
-            plot_exists = True
-        else:
-            plot_exists = False
-        if fit_exists and save_fit and not save_plot:
-            print(f"Skipping {output_filename}.fits as it already exists.")
-            return
-        if plot_exists and save_plot and not save_fit:
-            print(f"Skipping {output_filename}.{plot_ext} as it already exists.")
-            return
-        if fit_exists and plot_exists and save_fit and save_plot:
-            print(f"Skipping {output_filename} as both the fits file and plot already exist.")
-            return
+        first_map = sunpy.map.Map(map_files[0])
+    except Exception as e:
+        print(f"Error loading first map {map_files[0]}: {e}")
+        return None, None
 
     fd_size = 3500  # Hardcoded to avoid anomolous rasters generating incorrect huge full disk maps and crashing with memory errors
 
@@ -86,7 +195,11 @@ def make_helioprojective_map(map_files, save_dir, wavelength, measurement, overl
 
     for map_file in map_files:
 
-        map = sunpy.map.Map(map_file)
+        try:
+            map = sunpy.map.Map(map_file)
+        except Exception as e:
+            print(f"Error loading map {map_file}: {e}. Skipping.")
+            continue
 
         if apply_rotation:
 
@@ -118,45 +231,51 @@ def make_helioprojective_map(map_files, save_dir, wavelength, measurement, overl
 
                 if preserve_limb:
                     with SphericalScreen(map.observer_coordinate, only_off_disk=True):
-                        map = map.reproject_to(fd_map.wcs, algorithm='exact')  # Add map data to array of same size as full disk data array, for combination below
+                        map = map.reproject_to(fd_map.wcs, algorithm=algorithm)  # Add map data to array of same size as full disk data array, for combination below
                 else:
-                    map = map.reproject_to(fd_map.wcs, algorithm='exact')
+                    map = map.reproject_to(fd_map.wcs, algorithm=algorithm)
 
             else:
 
                 with propagate_with_solar_surface(rotation_model='howard'):
                     if preserve_limb:
                         with SphericalScreen(map.observer_coordinate, only_off_disk=True):
-                            map = map.reproject_to(fd_map.wcs, algorithm='exact')
+                            map = map.reproject_to(fd_map.wcs, algorithm=algorithm)
                     else:
-                        map = map.reproject_to(fd_map.wcs, algorithm='exact')
+                        map = map.reproject_to(fd_map.wcs, algorithm=algorithm)
 
         else:
 
             if preserve_limb:
                 with SphericalScreen(map.observer_coordinate, only_off_disk=True):
-                    map = map.reproject_to(fd_map.wcs, algorithm='exact')
+                    map = map.reproject_to(fd_map.wcs, algorithm=algorithm)
             else:
-                map = map.reproject_to(fd_map.wcs, algorithm='exact')
+                map = map.reproject_to(fd_map.wcs, algorithm=algorithm)
 
+        # Combine data based on overlap method
         if overlap == 'max':
-            combined_data = np.where(np.isnan(combined_data), map.data, np.where(np.isnan(map.data), combined_data, np.where(np.abs(combined_data) >= np.abs(map.data), combined_data, map.data)))
+            combined_data = _combine_data_max_abs(combined_data, map.data)
         elif overlap == 'mean':
-            combined_data = np.where(np.isnan(combined_data), map.data, np.nansum([combined_data, map.data], axis=0))
-        elif overlap == 'nan':
-            combined_data = np.where(np.isnan(combined_data), map.data, np.nansum([combined_data, map.data], axis=0))
+            combined_data = _combine_data_mean(combined_data, map.data)
+        else:
+            # overlap is a numeric value (e.g., np.nan, 0, -999)
+            combined_data = _combine_data_with_fill(combined_data, map.data, overlap)
+        
+        # Update overlap mask for all methods
+        overlap_mask = _update_overlap_mask(overlap_mask, map.data)
 
-        overlap_mask = np.where(np.isnan(map.data), overlap_mask, overlap_mask + 1)
-
+    # Create final map based on overlap method
     if overlap == 'mean':
-        fd_map = sunpy.map.Map(combined_data / overlap_mask, fd_map.meta)
-    elif overlap == 'mask':
-        fd_map = sunpy.map.Map(overlap_mask, fd_map.meta)
-    elif overlap == 'nan':
-        combined_data = np.where(overlap_mask > 1, np.nan, combined_data)
-        fd_map = sunpy.map.Map(combined_data, fd_map.meta)
+        # Average accumulated values using overlap count
+        # Avoid division by zero by preserving NaN where no data exists
+        averaged_data = np.where(overlap_mask > 0, combined_data / overlap_mask, np.nan)
+        fd_map = sunpy.map.Map(averaged_data, fd_map.meta)
     else:
+        # For 'max' or any numeric fill value
         fd_map = sunpy.map.Map(combined_data, fd_map.meta)
+    
+    # Create overlap mask map
+    overlap_map = sunpy.map.Map(overlap_mask, fd_map.meta)
 
     # Tidy up the off limb data if the limb should be cropped, to make sure limb is excluded
     if not preserve_limb:
@@ -165,55 +284,19 @@ def make_helioprojective_map(map_files, save_dir, wavelength, measurement, overl
         fd_map_data = np.where(limb_mask, fd_map.data, np.nan)
         fd_map = sunpy.map.Map(fd_map_data, fd_map.meta)
 
-    if save_fit:
-
-        fd_map.save(os.path.join(save_dir, f"{output_filename}.fits"), overwrite=True)
-
-    if save_plot:
-        
-        fig = plt.figure()
-        ax = plt.subplot(projection=fd_map)
-        
-        if measurement == 'int':
-            fd_map.plot_settings['norm'] = LogNorm(vmin=1e1, vmax=5e3)
-            im = fd_map.plot(cmap='gist_heat')
-        elif measurement == 'vel':
-            im = fd_map.plot(cmap='RdBu_r')
-            im.set_norm(plt.Normalize(vmin=-10, vmax=10))
-        elif measurement == 'ntv':
-            im = fd_map.plot(cmap='inferno')
-            im.set_norm(plt.Normalize(vmin=0, vmax=40))
-        elif measurement == 'mag':
-            im = fd_map.plot(cmap='gray')
-            im.set_norm(plt.Normalize(vmin=-300, vmax=300))
-        elif measurement == 'fip':
-            im = fd_map.plot(cmap='CMRmap')
-            im.set_norm(plt.Normalize(vmin=0, vmax=3))
-        elif measurement == 'chi2':
-            im = fd_map.plot(cmap='gray')
-            im.set_norm(plt.Normalize(vmin=0, vmax=4))
-        else:
-            print(f"Error: plotting information for this measurement is not defined in eismaps. Full disk fits file was saved, but can't plot.")
-            return
-        
-        fd_map.draw_limb(axes=ax, color="k")
-        im = ax.get_images()
-        im_lims = im[0].get_extent()
-        ax.set_aspect(abs((im_lims[1]-im_lims[0])/(im_lims[3]-im_lims[2])))
-        plt.colorbar(extend='both')
-        plt.savefig(os.path.join(save_dir, f"{output_filename}.{plot_ext}"), dpi=plot_dpi)
-        plt.close()
-
-    return fd_map
+    return fd_map, overlap_map
 
 def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, apply_rotation=True, deg_per_pix=0.1, save_fit=False, save_plot=False, plot_ext='png', plot_dpi=300, skip_done=True):
     """
     Make a Carrington full disk map from a list of maps.
     """
-
-    first_map = safe_load_map(map_files[0])
-    if first_map is None:
-        return
+    
+    # Load the first map to establish the reference frame
+    try:
+        first_map = sunpy.map.Map(map_files[0])
+    except Exception as e:
+        print(f"Error loading first map {map_files[0]}: {e}")
+        return None
 
     map_file_datetime = os.path.basename(map_files[0]).split('.')[0].replace('eis_', '')
     output_filename = f"eis_{map_file_datetime}.{wavelength}.{measurement}.fd_ca"
@@ -267,7 +350,11 @@ def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, a
 
     for map_file in map_files:
 
-        map = sunpy.map.Map(map_file)
+        try:
+            map = sunpy.map.Map(map_file)
+        except Exception as e:
+            print(f"Error loading map {map_file}: {e}. Skipping.")
+            continue
 
         # Change the time of the fd_map to the same as the time of the raster
         fd_map_temp = fd_map
