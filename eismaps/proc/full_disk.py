@@ -94,7 +94,8 @@ def make_helioprojective_map(
     apply_rotation: bool = True, 
     preserve_limb: bool = True, 
     drag_rotate: bool = False,
-    algorithm: Literal['exact', 'interpolation', 'adaptive'] = 'exact'
+    algorithm: Literal['exact', 'interpolation', 'adaptive'] = 'exact',
+    remove_off_disk: bool = False
 ):
     """
     Create a helioprojective full disk map from multiple EIS raster maps.
@@ -124,6 +125,9 @@ def make_helioprojective_map(
         - 'exact': Exact reprojection (slower but more accurate)
         - 'interpolation': Interpolation-based reprojection (faster but less accurate)
         - 'adaptive': Adaptive reprojection (adaptive, anti-aliased resampling algorithm, with optional flux conservation)
+    remove_off_disk : bool, default=False
+        If True, set off-disk (off-limb) pixels to NaN for each individual map 
+        before combining. This is applied after reprojection but before data combination.
         
     Returns
     -------
@@ -151,6 +155,9 @@ def make_helioprojective_map(
     >>>
     >>> # Set overlapping regions to a specific value
     >>> fd_map, overlap_map = make_helioprojective_map(map_files, -999.0)
+    >>>
+    >>> # Remove off-disk data from each map before combining
+    >>> fd_map, overlap_map = make_helioprojective_map(map_files, 'max', remove_off_disk=True)
     """
     # Input validation
     if not map_files:
@@ -200,6 +207,13 @@ def make_helioprojective_map(
         except Exception as e:
             print(f"Error loading map {map_file}: {e}. Skipping.")
             continue
+
+        # Remove off-disk data if requested (before any reprojection)
+        if remove_off_disk:
+            map_coords = sunpy.map.all_coordinates_from_map(map)
+            on_disk_mask = sunpy.map.coordinate_is_on_solar_disk(map_coords)
+            map_data_masked = np.where(on_disk_mask, map.data, np.nan)
+            map = sunpy.map.Map(map_data_masked, map.meta)
 
         if apply_rotation:
 
