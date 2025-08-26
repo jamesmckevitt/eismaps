@@ -95,7 +95,8 @@ def make_helioprojective_map(
     preserve_limb: bool = True, 
     drag_rotate: bool = False,
     algorithm: Literal['exact', 'interpolation', 'adaptive'] = 'exact',
-    remove_off_disk: bool = False
+    remove_off_disk: bool = False,
+    apply_los_correction: bool = False
 ):
     """
     Create a helioprojective full disk map from multiple EIS raster maps.
@@ -128,6 +129,11 @@ def make_helioprojective_map(
     remove_off_disk : bool, default=False
         If True, set off-disk (off-limb) pixels to NaN for each individual map 
         before combining. This is applied after reprojection but before data combination.
+    apply_los_correction : bool, default=False
+        If True, apply line-of-sight correction to account for viewing angle effects.
+        Divides pixel values by cos(viewing_angle) to correct for foreshortening.
+        Useful for radial measurements (e.g., velocities) where only the line-of-sight
+        component is observed.
         
     Returns
     -------
@@ -158,6 +164,9 @@ def make_helioprojective_map(
     >>>
     >>> # Remove off-disk data from each map before combining
     >>> fd_map, overlap_map = make_helioprojective_map(map_files, 'max', remove_off_disk=True)
+    >>>
+    >>> # Apply line-of-sight correction for radial measurements
+    >>> fd_map, overlap_map = make_helioprojective_map(map_files, 'max', apply_los_correction=True)
     """
     # Input validation
     if not map_files:
@@ -170,31 +179,33 @@ def make_helioprojective_map(
         print(f"Error loading first map {map_files[0]}: {e}")
         return None, None
 
-    fd_size = 3500  # Hardcoded to avoid anomolous rasters generating incorrect huge full disk maps and crashing with memory errors
+    fd_size_arcsec = 3500  # Hardcoded to avoid anomolous rasters generating incorrect huge full disk maps and crashing with memory errors
 
-    map_dx = first_map.meta['cdelt1']  # Pixel sizes for the full disk image
-    map_dy = first_map.meta['cdelt2']
-    fd_width = round(fd_size / map_dx)
-    fd_height = round(fd_size / map_dy)
+    # Get pixel scale from WCS with proper units
+    cdelt_wcs = first_map.wcs.wcs.cdelt  # This is in degrees
+    cunit_wcs = first_map.wcs.wcs.cunit  # Units (typically ['deg', 'deg'])
+    
+    # Convert to arcseconds using astropy units
+    map_dx = (cdelt_wcs[0] * u.Unit(cunit_wcs[0])).to(u.arcsec).value
+    map_dy = (cdelt_wcs[1] * u.Unit(cunit_wcs[1])).to(u.arcsec).value
+    
+    fd_width = round(fd_size_arcsec / map_dx)
+    fd_height = round(fd_size_arcsec / map_dy)
 
-    fd_header = {
-        'cdelt1': map_dx,
-        'cdelt2': map_dy,
-        'crpix1': fd_width / 2,
-        'crpix2': fd_height / 2,
-        'crval1': 0,
-        'crval2': 0,
-        'cunit1': 'arcsec',
-        'cunit2': 'arcsec',
-        'ctype1': 'HPLN-TAN',
-        'ctype2': 'HPLT-TAN',
-        'date-obs': first_map.meta['date_obs'],
-        'dsun_obs': first_map.meta['dsun_obs'],
-        'hgln_obs': first_map.meta['hgln_obs'],
-        'hglt_obs': first_map.meta['hglt_obs'],
-    }
-
+    # Create full disk coordinate at disk center using first map's coordinate frame
+    fd_coord = SkyCoord(0*u.arcsec, 0*u.arcsec, frame=first_map.coordinate_frame)
+    
+    # Create the full disk data array
     fd_data = np.full((fd_height, fd_width), np.nan)
+    
+    # Use SunPy's make_fitswcs_header function to create proper header
+    fd_header = sunpy.map.make_fitswcs_header(
+        fd_data, 
+        fd_coord,
+        scale=[map_dx, map_dy] * u.arcsec/u.pix,
+        projection_code="TAN"
+    )
+    
     fd_map = sunpy.map.Map(fd_data, fd_header)
 
     overlap_mask = np.zeros((fd_height, fd_width))
@@ -214,6 +225,26 @@ def make_helioprojective_map(
             on_disk_mask = sunpy.map.coordinate_is_on_solar_disk(map_coords)
             map_data_masked = np.where(on_disk_mask, map.data, np.nan)
             map = sunpy.map.Map(map_data_masked, map.meta)
+
+        # Apply line-of-sight correction if requested (before any reprojection)
+        if apply_los_correction:
+            map_coords = sunpy.map.all_coordinates_from_map(map)
+            # Calculate distance from disk center in arcsec
+            r_arcsec = np.sqrt(map_coords.Tx.value**2 + map_coords.Ty.value**2)
+            # Get solar radius in arcsec for this observation
+            solar_radius_arcsec = map.rsun_obs.to(u.arcsec).value
+            # Calculate viewing angle (0 at disk center, pi/2 at limb)
+            # Only apply correction to on-disk pixels
+            on_disk = sunpy.map.coordinate_is_on_solar_disk(map_coords)
+            viewing_angle = np.zeros_like(r_arcsec)
+            viewing_angle[on_disk] = np.arcsin(r_arcsec[on_disk] / solar_radius_arcsec)
+            # Apply correction: divide by cos(viewing_angle) to correct for foreshortening
+            cos_correction = np.ones_like(map.data)
+            cos_correction[on_disk] = 1.0 / np.cos(viewing_angle[on_disk])
+            # # Avoid division by very small numbers near the limb
+            # cos_correction = np.where(cos_correction > 10, np.nan, cos_correction)
+            corrected_data = map.data * cos_correction
+            map = sunpy.map.Map(corrected_data, map.meta)
 
         if apply_rotation:
 
