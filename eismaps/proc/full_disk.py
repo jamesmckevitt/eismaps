@@ -15,6 +15,7 @@ from sunpy.physics.differential_rotation import solar_rotate_coordinate
 from sunpy.coordinates import Helioprojective, propagate_with_solar_surface, RotatedSunFrame
 from sunpy.coordinates import SphericalScreen
 from typing import List, Optional, Literal, Union, TYPE_CHECKING
+import logging
 
 if TYPE_CHECKING:
     import sunpy.map
@@ -172,6 +173,10 @@ def make_helioprojective_map(
     if not map_files:
         raise ValueError("map_files cannot be empty")
     
+    # Suppress SunPy INFO messages about missing solar radius metadata
+    sunpy_logger = logging.getLogger('sunpy')
+    sunpy_logger.setLevel(logging.WARNING)
+    
     # Load the first map to establish the reference frame
     try:
         first_map = sunpy.map.Map(map_files[0])
@@ -211,7 +216,7 @@ def make_helioprojective_map(
     overlap_mask = np.zeros((fd_height, fd_width))
     combined_data = np.full((fd_height, fd_width), np.nan)
 
-    for map_file in map_files:
+    for map_file in tqdm(map_files, desc="Processing maps", leave=False):
 
         try:
             map = sunpy.map.Map(map_file)
