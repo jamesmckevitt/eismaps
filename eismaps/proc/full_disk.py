@@ -96,7 +96,7 @@ def make_helioprojective_map(
     preserve_limb: bool = True, 
     drag_rotate: bool = False,
     algorithm: Literal['exact', 'interpolation', 'adaptive'] = 'exact',
-    remove_off_disk: bool = False,
+    remove_off_disk: Union[bool, Literal['before', 'after']] = False,
     apply_los_correction: bool = False
 ):
     """
@@ -127,9 +127,11 @@ def make_helioprojective_map(
         - 'exact': Exact reprojection (slower but more accurate)
         - 'interpolation': Interpolation-based reprojection (faster but less accurate)
         - 'adaptive': Adaptive reprojection (adaptive, anti-aliased resampling algorithm, with optional flux conservation)
-    remove_off_disk : bool, default=False
-        If True, set off-disk (off-limb) pixels to NaN for each individual map 
-        before combining. This is applied after reprojection but before data combination.
+    remove_off_disk : bool or {'before', 'after'}, default=False
+        Controls when and if off-disk (off-limb) pixels are set to NaN:
+        - False: No off-disk removal
+        - True or 'before': Remove off-disk pixels from each individual map before combining
+        - 'after': Remove off-disk pixels from the final combined map
     apply_los_correction : bool, default=False
         If True, apply line-of-sight correction to account for viewing angle effects.
         Divides pixel values by cos(viewing_angle) to correct for foreshortening.
@@ -163,8 +165,14 @@ def make_helioprojective_map(
     >>> # Set overlapping regions to a specific value
     >>> fd_map, overlap_map = make_helioprojective_map(map_files, -999.0)
     >>>
-    >>> # Remove off-disk data from each map before combining
+    >>> # Remove off-disk data from each map before combining (original behavior)
     >>> fd_map, overlap_map = make_helioprojective_map(map_files, 'max', remove_off_disk=True)
+    >>>
+    >>> # Remove off-disk data from each map before combining (explicit)
+    >>> fd_map, overlap_map = make_helioprojective_map(map_files, 'max', remove_off_disk='before')
+    >>>
+    >>> # Remove off-disk data from the final combined map
+    >>> fd_map, overlap_map = make_helioprojective_map(map_files, 'max', remove_off_disk='after')
     >>>
     >>> # Apply line-of-sight correction for radial measurements
     >>> fd_map, overlap_map = make_helioprojective_map(map_files, 'max', apply_los_correction=True)
@@ -224,8 +232,8 @@ def make_helioprojective_map(
             print(f"Error loading map {map_file}: {e}. Skipping.")
             continue
 
-        # Remove off-disk data if requested (before any reprojection)
-        if remove_off_disk:
+        # Remove off-disk data if requested before combining (original behavior)
+        if remove_off_disk is True or remove_off_disk == 'before':
             map_coords = sunpy.map.all_coordinates_from_map(map)
             on_disk_mask = sunpy.map.coordinate_is_on_solar_disk(map_coords)
             map_data_masked = np.where(on_disk_mask, map.data, np.nan)
@@ -326,6 +334,13 @@ def make_helioprojective_map(
     
     # Create overlap mask map
     overlap_map = sunpy.map.Map(overlap_mask, fd_map.meta)
+
+    # Remove off-disk data after combining if requested
+    if remove_off_disk == 'after':
+        pixel_coords = sunpy.map.all_coordinates_from_map(fd_map)
+        on_disk_mask = sunpy.map.coordinate_is_on_solar_disk(pixel_coords)
+        fd_map_data = np.where(on_disk_mask, fd_map.data, np.nan)
+        fd_map = sunpy.map.Map(fd_map_data, fd_map.meta)
 
     # Tidy up the off limb data if the limb should be cropped, to make sure limb is excluded
     if not preserve_limb:
