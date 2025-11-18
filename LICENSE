@@ -1,7 +1,11 @@
 eismaps © 2023 by James McKevitt is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International. This licence lets you copy and redistribute the material, and remix, transform, and build upon the material so long as you give appropriate credit, provide a link to the license, indicate if changes were made, and distribute your contributions under the same license as the original. You may not use the material for commercial purposes. To view a copy of this license, visit https://creativecommons.org/licenses/by-nc-sa/4.0/
 
-If used, you must cite this repository and:
-McKevitt, J. (2025). Coronal non-thermal and Doppler plasma flows driven by photospheric flux in 28 active regions. In prep.
+If used, you must cite the paper:
+- McKevitt, J. (2025). Coronal non-thermal and Doppler plasma flows driven by photospheric flux in 28 active regions. In prep.
+
+and the code using either:
+- DOI: [10.5281/zenodo.17640972](https://doi.org/10.5281/zenodo.17640972)  
+- GitHub: [github.com/jamesmckevitt/eismaps](https://github.com/jamesmckevitt/eismaps)
 
 Contact: jm2@mssl.ucl.ac.uk
 
