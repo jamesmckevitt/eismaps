@@ -28,7 +28,7 @@ from eismaps.proc import fit
 
 # Batch fit Fe XII 195.119 Å line (wrapping eispac fitting)
 fit.batch(
-    data_files,                          # List of .data.h5 files to process
+    data_files,                         # List of .data.h5 files to process
     lines_to_fit=['fe_12_195_119'],     # Specific lines to fit (or 'all' for all available)
     ncpu='max',                         # Number of CPUs ('max' uses all available cores)
     filter_chi2=None,                   # Chi-squared filter threshold (None = no filtering)
@@ -78,7 +78,7 @@ intensity_fd = full_disk.make_helioprojective_map(
     drag_rotate=False,                  # Use Howard rotation model (False) or drag-based (True)
     algorithm='exact',                  # Reprojection: 'exact', 'interpolation', 'adaptive'
     remove_off_disk='after',            # Remove off-disk pixels: False, True/'before', 'after' disk assembly
-    apply_los_correction=False          # Apply line-of-sight viewing angle correction
+    apply_los_correction=False          # Apply line-of-sight viewing angle correction (if not applied earlier)
 )
 
 # Create velocity full-disk map
@@ -90,7 +90,7 @@ velocity_fd = full_disk.make_helioprojective_map(
     drag_rotate=False,
     algorithm='exact',
     remove_off_disk='after',
-    apply_los_correction=True           # Apply line-of-sight viewing angle correction (if not applied earlier)
+    apply_los_correction=True
 )
 
 # Create non-thermal velocity full-disk map
