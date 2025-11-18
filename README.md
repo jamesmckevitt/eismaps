@@ -4,9 +4,14 @@ EISMaps is a Python package for processing data from the EIS (Extreme-ultraviole
 
 Contact: James McKevitt (jm2@mssl.ucl.ac.uk).
 
-Licence: CC BY-NC-SA 4.0 (see [LICENSE](LICENSE) for details).
+Licence: CC BY-NC-SA 4.0 (see [license file](LICENSE) for details).
 
-Cite: McKevitt, J. (2025). Coronal non-thermal and Doppler plasma flows driven by photospheric flux in 28 active regions. In prep.
+If using this code, please cite the paper:
+- McKevitt, J., et al. (2025). Coronal non-thermal and Doppler plasma flows driven by photospheric flux in 28 active regions. In prep.
+
+and the code using either:
+- DOI: [10.5281/zenodo.17640972](https://doi.org/10.5281/zenodo.17640972)  
+- GitHub: [github.com/jamesmckevitt/eismaps](https://github.com/jamesmckevitt/eismaps)
 
 ## Installation
 
