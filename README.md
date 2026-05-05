@@ -7,7 +7,7 @@ Contact: James McKevitt (jm2@mssl.ucl.ac.uk).
 Licence: CC BY-NC-SA 4.0 (see [license file](LICENSE) for details).
 
 If using this code, please cite the paper:
-- McKevitt, J., et al. (2025). Coronal non-thermal and Doppler plasma flows driven by photospheric flux in 28 active regions. In prep.
+- McKevitt, J., et al. (2026). Coronal non-thermal and Doppler plasma flows driven by photospheric flux in 28 active regions. Publications of the Astronomical Society of Japan. https://doi.org/10.1093/pasj/psag024
 
 and the code using either:
 - DOI: [10.5281/zenodo.17640972](https://doi.org/10.5281/zenodo.17640972)  
