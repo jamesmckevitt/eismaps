@@ -443,7 +443,19 @@ def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, a
         print(f"Error loading first map {map_files[0]}: {e}")
         return None
 
-    map_file_datetime = os.path.basename(map_files[0]).split('.')[0].replace('eis_', '')
+    # Derive an output filename from the first input. Support both file paths
+    # and in-memory sunpy maps (the latter happens when the public API hands us
+    # a MapSequence or a list of calibrated maps).
+    first_input = map_files[0]
+    if hasattr(first_input, 'meta') and hasattr(first_input, 'data'):
+        date_obs = str(first_input.meta.get('date_obs', '')).strip()
+        if not date_obs:
+            raise ValueError('First input map has no date_obs metadata; cannot derive output filename.')
+        compact_date = date_obs.split('T')[0].replace('-', '')
+        compact_time = date_obs.split('T')[1].split('.')[0].replace(':', '') if 'T' in date_obs else '000000'
+        map_file_datetime = f"{compact_date}_{compact_time}"
+    else:
+        map_file_datetime = os.path.basename(str(first_input)).split('.')[0].replace('eis_', '')
     output_filename = f"eis_{map_file_datetime}.{wavelength}.{measurement}.fd_ca"
 
     if skip_done:
