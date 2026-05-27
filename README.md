@@ -95,7 +95,7 @@ map_products = make_maps(
 )
 ```
 
-Behavior:
+Behaviour:
 
 - a single requested measurement returns a SunPy map or `MapSequence`
 - multiple requested measurements return a dictionary keyed by measurement name
@@ -109,7 +109,7 @@ Useful options:
 
 ### Calibration
 
-`apply_calibration()` converts an intensity map (or a list / dict of maps) from raw EIS units into calibrated radiance, using one of several published methods. Each method gives the effective area `Aeff(wavelength, date)` and the helper divides the map by the appropriate `Aeff` ratio:
+`apply_calibration()` converts gives an intensity map (or a list / dict of maps) in calibrated radiance, using one of several published methods:
 
 ```python
 from eismaps import apply_calibration
@@ -154,7 +154,7 @@ Use `make_carrington_map()` when you want a Carrington projection instead of a h
 
 ## Typical API Flow
 
-The public functions are intended to chain naturally:
+The public functions are intended to chain:
 
 ```python
 from eismaps import apply_calibration, fit, make_helioprojective_map, make_maps
@@ -165,9 +165,7 @@ calibrated_intensity = apply_calibration(map_products['int'], method='del_zanna_
 fd_map, overlap_map = make_helioprojective_map(calibrated_intensity, overlap='mean')
 ```
 
-For data discovery and download, see the notebook tutorial, which shows the current SunPy Fido plus EISPAC-client workflow.
-
-## Calibration Assets
+## Developer note: Calibration Assets
 
 The calibration helpers expect reference assets in `eismaps/calibration_data/` (plus `eismaps/eis_width2velocity.dat` at the package root for the non-thermal velocity helper). These files are mirrored from a local SolarSoft (SSW) checkout and the originals live in the `hinode/eis/response` and `hinode/eis/idl/atest/hwarren` trees there.
 
@@ -182,7 +180,7 @@ The calibration helpers expect reference assets in `eismaps/calibration_data/` (
 | `eis_width2velocity.dat` (package root) | `hinode/eis/idl/atest/hwarren/eis_width2velocity.dat` | Non-thermal velocity helper (`eismaps.utils.width2velocity`) |
 | `sources.json` | written by the sync helper | Provenance manifest of the copied files |
 
-The Warren 2014 NRL coefficients and the Del Zanna 2013 spline points are not stored as files. Both are inlined directly in `eismaps/calibration.py` (as `WARREN_2014_*` and `GDZ_2013_*` constants), exactly the way the SSW IDL routines `eis_ea_nrl.pro` and `eis_ltds.pro` embed them in source. Their published values are stable - the Warren 2014 NRL set is at v1.3 (Feb 2016) and the GDZ 2013 set has not been revised. If a new coefficient set is ever released, update those constants in `calibration.py`.
+The Warren 2014 NRL coefficients and the Del Zanna 2013 spline points are not stored as files. Both are inlined directly in `eismaps/calibration.py` (as `WARREN_2014_*` and `GDZ_2013_*` constants), exactly the way the SSW IDL routines `eis_ea_nrl.pro` and `eis_ltds.pro` embed them in source. Their published values are stable - the Warren 2014 NRL set is at v1.3 (Feb 2016) and the GDZ 2013 set has not been revised.
 
 ### Refreshing the assets from SolarSoft
 
@@ -210,7 +208,3 @@ This will:
 5. Write a manifest at `calibration_data/sources.json` recording source paths, destination paths, the SSW root used, and the UTC sync timestamp.
 
 The Warren 2014 `.sav` cache is intentionally left alone by the sync (see note above).
-
-### Numerical sanity check
-
-For Fe XII 195.119 A, the bundled ground/preflight effective area gives `eis_ea(195.119) = 0.302 cm^2`, matching the value quoted in Del Zanna (2013). Time-dependent areas at 2013-01-16 are `~0.298 cm^2` (Warren 2014) and `~0.329 cm^2` (Del Zanna 2025), consistent with the published degradation curves.
