@@ -1,6 +1,6 @@
 include README.md
+include LICENSE
 include eismaps/*.dat
-include eismaps/calibration_data/*.sav
-include eismaps/calibration_data/*.genx
 include eismaps/calibration_data/EIS_EffArea_*
+include eismaps/calibration_data/*.sav
 include eismaps/calibration_data/*.json

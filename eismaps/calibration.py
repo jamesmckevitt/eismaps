@@ -12,7 +12,6 @@ import json
 import os
 import re
 import shutil
-import warnings
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -24,23 +23,19 @@ import sunpy.map
 
 from eismaps.utils import apply_default_plot_settings
 
-CALIBRATION_DATA_PATH = Path(__file__).with_name('calibration_data')
+PACKAGE_ROOT = Path(__file__).resolve().parent
+CALIBRATION_DATA_PATH = PACKAGE_ROOT / 'calibration_data'
 CALIBRATION_MANIFEST_FILE = CALIBRATION_DATA_PATH / 'sources.json'
+WIDTH2VELOCITY_FILE = PACKAGE_ROOT / 'eis_width2velocity.dat'
 
 FIT_EA_PATTERN = 'fit_eis_ea_*.sav'
-NRL_EA_PATTERN = 'nrl_ea_coeff_v*.genx'
-LEGACY_WARREN_2014_FILE = CALIBRATION_DATA_PATH / 'eis_calib_warren_2014.sav'
-LEGACY_PREFLIGHT_SHORT_FILE = CALIBRATION_DATA_PATH / 'preflight_calib_short.sav'
-LEGACY_PREFLIGHT_LONG_FILE = CALIBRATION_DATA_PATH / 'preflight_calib_long.sav'
 RAW_PREFLIGHT_SHORT_PATTERN = 'EIS_EffArea_B.*'
 RAW_PREFLIGHT_LONG_PATTERN = 'EIS_EffArea_A.*'
 GDZ_2013_SHORT_RESPONSE_FILE = CALIBRATION_DATA_PATH / 'EIS_EffArea_B.004'
 GDZ_2013_LONG_RESPONSE_FILE = CALIBRATION_DATA_PATH / 'EIS_EffArea_A.004'
 SSW_FIT_EA_DIR = Path('hinode/eis/idl/atest/hwarren/calibration/new')
-SSW_NRL_EA_DIR = Path('hinode/eis/idl/atest/hwarren/calibration')
+SSW_WIDTH2VELOCITY_DIR = Path('hinode/eis/idl/atest/hwarren')
 SSW_RESPONSE_DIR = Path('hinode/eis/response')
-
-_WARNED_WARREN_CACHE = False
 
 __all__ = [
     'apply_calibration',
@@ -127,6 +122,32 @@ GDZ_2013_REFERENCE_DATE = '2006-09-22T21:36:00.000'
 GDZ_2013_LAST_DATE = '2012-09-14T00:00:00.000'
 GDZ_2013_LW_COEFFICIENTS = np.array([1.0326230, -5.2495791e-09, 1.2055185e-17], dtype=float)
 
+# Warren 2014 NRL coefficient set, version 1.3 (Mar 2014). These constants are
+# the entirety of the irreducible data in nrl_ea_coeff_v1.3.genx. They live in
+# the source the same way the GDZ 2013 spline points above live here and the
+# way the SSW IDL routine eis_ea_nrl.pro embeds them into a common block.
+# Reference: Warren, Ugarte-Urra & Landi 2014, ApJS 213, 11.
+WARREN_2014_VERSION = '1.3'
+WARREN_2014_REFERENCE_DATE = '2006-09-22T00:00:00.000'
+WARREN_2014_WAVE_KNOTS_SW = np.array(
+    [165.0, 173.0, 181.0, 189.0, 197.0, 205.0, 213.0], dtype=float)
+WARREN_2014_A0_SW = np.array([
+    1.4233487e-04, 8.9400879e-04, 1.9436385e-02, 2.0717900e-01,
+    3.8475943e-01, 5.0214089e-02, 1.3078585e-02,
+], dtype=float)
+WARREN_2014_TAU_SW = np.array([
+    96.65425, 96.65471, 41.419804, 78.653114, 53.04953, -39.259445, -15.668934,
+], dtype=float)
+WARREN_2014_WAVE_KNOTS_LW = np.array(
+    [245.0, 252.83333, 260.66666, 268.5, 276.33334, 284.16666, 292.0], dtype=float)
+WARREN_2014_A0_LW = np.array([
+    0.02530108, 0.0504537, 0.12446866, 0.19408692,
+    0.14705566, 0.06746493, 0.01753202,
+], dtype=float)
+WARREN_2014_TAU_LW = np.array([
+    11.218151, 13.9550705, 10.418322, 7.549609, 8.580216, 8.016686, 14.805959,
+], dtype=float)
+
 
 def _latest_matching_file(directory, pattern):
     """Return the lexicographically latest file matching ``pattern`` in ``directory``."""
@@ -154,12 +175,9 @@ def _resolve_response_file(short=False, long=False):
         raise ValueError('Exactly one of short=True or long=True must be set.')
 
     pattern = RAW_PREFLIGHT_SHORT_PATTERN if short else RAW_PREFLIGHT_LONG_PATTERN
-    legacy_file = LEGACY_PREFLIGHT_SHORT_FILE if short else LEGACY_PREFLIGHT_LONG_FILE
     resolved_file = _latest_matching_file(CALIBRATION_DATA_PATH, pattern)
     if resolved_file is not None:
         return resolved_file
-    if legacy_file.exists():
-        return legacy_file
 
     channel = 'short-wave' if short else 'long-wave'
     raise FileNotFoundError(
@@ -179,53 +197,29 @@ def _resolve_del_zanna_2013_response_file(short=False, long=False):
     return _resolve_response_file(short=short, long=long)
 
 
-def _warn_legacy_warren_cache():
-    """Warn once when the cached Warren 2014 coefficients are used."""
-    global _WARNED_WARREN_CACHE
-    if _WARNED_WARREN_CACHE:
-        return
+def _load_warren_2014_coefficients():
+    """Return the Warren 2014 NRL coefficient set as a plain dict.
 
-    _WARNED_WARREN_CACHE = True
-    warnings.warn(
-        'Using legacy Warren 2014 coefficients from eis_calib_warren_2014.sav. '
-        'The raw SolarSoft nrl_ea_coeff_v*.genx file is copied for provenance, '
-        'but direct Python decoding is not implemented yet.',
-        RuntimeWarning,
-        stacklevel=2,
-    )
-
-
-def _load_warren_2014_coefficients(file_path=None):
-    """Load Warren 2014 calibration coefficients from the packaged cache."""
-    resolved_file = Path(file_path) if file_path is not None else LEGACY_WARREN_2014_FILE
-    if resolved_file.suffix.lower() == '.genx':
-        raise ValueError(
-            'Direct reading of SolarSoft .genx Warren coefficient files is not implemented. '
-            'Use the cached eis_calib_warren_2014.sav file or provide a converted .sav file.'
-        )
-    if not resolved_file.exists():
-        raw_file = _latest_matching_file(CALIBRATION_DATA_PATH, NRL_EA_PATTERN)
-        if raw_file is not None:
-            raise FileNotFoundError(
-                'Found a SolarSoft nrl_ea_coeff_v*.genx file, but no converted '
-                'eis_calib_warren_2014.sav cache is available. Keep the cache in '
-                'calibration_data until a direct .genx reader is added.'
-            )
-        raise FileNotFoundError(
-            'No Warren 2014 calibration coefficients are available in calibration_data.'
-        )
-
-    _warn_legacy_warren_cache()
-    return readsav(resolved_file)['eis']
+    The constants are inlined at module scope (see WARREN_2014_*). This
+    helper exists so the calibration code path matches the IDL
+    ``eis_ea_nrl.pro`` common-block layout without needing an external
+    ``.sav`` cache. Reference: Warren, Ugarte-Urra & Landi 2014, ApJS 213, 11.
+    """
+    return {
+        'version': WARREN_2014_VERSION,
+        't0': WARREN_2014_REFERENCE_DATE,
+        'wave_knots_sw': WARREN_2014_WAVE_KNOTS_SW,
+        'a0_sw': WARREN_2014_A0_SW,
+        'tau_sw': WARREN_2014_TAU_SW,
+        'wave_knots_lw': WARREN_2014_WAVE_KNOTS_LW,
+        'a0_lw': WARREN_2014_A0_LW,
+        'tau_lw': WARREN_2014_TAU_LW,
+    }
 
 
 def _read_effective_area_table(file_path):
-    """Read a pre-flight effective-area table from text or IDL save format."""
+    """Read a pre-flight effective-area table from a SolarSoft text file."""
     resolved_file = Path(file_path)
-    if resolved_file.suffix.lower() == '.sav':
-        preflight = readsav(resolved_file)
-        return np.asarray(preflight['wave'], dtype=float), np.asarray(preflight['ea'], dtype=float)
-
     wave, area = np.loadtxt(resolved_file, comments='#', unpack=True)
     return np.asarray(wave, dtype=float), np.asarray(area, dtype=float)
 
@@ -299,21 +293,31 @@ def sync_solarsoft_calibration_data(ssw_root=None, destination_dir=CALIBRATION_D
     destination_dir = Path(destination_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
 
+    # Each entry: (source_directory, glob_pattern, destination_directory, mode)
+    # mode='latest' copies the lexicographically latest match; mode='exact'
+    # copies that exact filename so callers that depend on a specific version
+    # (e.g. Del Zanna 2013 expects EIS_EffArea_B.004) get a guaranteed asset.
     source_specs = {
-        'fit_ea': (resolved_root / SSW_FIT_EA_DIR, FIT_EA_PATTERN),
-        'nrl_coefficients': (resolved_root / SSW_NRL_EA_DIR, NRL_EA_PATTERN),
-        'preflight_long': (resolved_root / SSW_RESPONSE_DIR, RAW_PREFLIGHT_LONG_PATTERN),
-        'preflight_short': (resolved_root / SSW_RESPONSE_DIR, RAW_PREFLIGHT_SHORT_PATTERN),
-        'del_zanna_2013_preflight_short': (resolved_root / SSW_RESPONSE_DIR, 'EIS_EffArea_B.004'),
+        'fit_ea':                          (resolved_root / SSW_FIT_EA_DIR,       FIT_EA_PATTERN,              destination_dir, 'latest'),
+        'preflight_long':                  (resolved_root / SSW_RESPONSE_DIR,     RAW_PREFLIGHT_LONG_PATTERN,  destination_dir, 'latest'),
+        'preflight_short':                  (resolved_root / SSW_RESPONSE_DIR,     RAW_PREFLIGHT_SHORT_PATTERN, destination_dir, 'latest'),
+        'del_zanna_2013_preflight_short':  (resolved_root / SSW_RESPONSE_DIR,     'EIS_EffArea_B.004',         destination_dir, 'exact'),
+        'del_zanna_2013_preflight_long':   (resolved_root / SSW_RESPONSE_DIR,     'EIS_EffArea_A.004',         destination_dir, 'exact'),
+        'width2velocity':                  (resolved_root / SSW_WIDTH2VELOCITY_DIR, 'eis_width2velocity.dat',  PACKAGE_ROOT,    'exact'),
     }
 
     copied = {}
-    for key, (directory, pattern) in source_specs.items():
-        source_file = _latest_matching_file(directory, pattern)
+    for key, (directory, pattern, dest_dir, mode) in source_specs.items():
+        if mode == 'exact':
+            candidate = directory / pattern
+            source_file = candidate if candidate.exists() else None
+        else:
+            source_file = _latest_matching_file(directory, pattern)
         if source_file is None:
             raise FileNotFoundError(f'Could not find {pattern} under {directory}')
 
-        destination_file = destination_dir / source_file.name
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        destination_file = dest_dir / source_file.name
         if overwrite or not destination_file.exists():
             shutil.copy2(source_file, destination_file)
 
@@ -323,13 +327,15 @@ def sync_solarsoft_calibration_data(ssw_root=None, destination_dir=CALIBRATION_D
         }
 
     manifest = {
-        'synced_at_utc': datetime.datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
+        'synced_at_utc': datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
         'ssw_root': str(resolved_root),
         'copied': copied,
         'notes': [
-            'fit_eis_ea_*.sav is used directly for the Del Zanna 2025-style interpolation path.',
-            'EIS_EffArea_A.* and EIS_EffArea_B.* are used directly for the pre-flight effective areas.',
-            'nrl_ea_coeff_v*.genx is copied for provenance; the Warren 2014 Python path still uses the converted eis_calib_warren_2014.sav cache.',
+            'fit_eis_ea_*.sav drives the Del Zanna 2025-style time-interpolated calibration.',
+            'EIS_EffArea_A.* and EIS_EffArea_B.* (text format) are the ground/preflight effective areas read by eis_ea.',
+            'EIS_EffArea_A.004 and EIS_EffArea_B.004 are pinned because the Del Zanna 2013 degradation model is defined against those exact versions.',
+            'eis_width2velocity.dat is the Mazzotta/Landini ion equilibrium table used by the non-thermal velocity helper.',
+            'Warren 2014 NRL coefficients are inlined in calibration.py (WARREN_2014_*). They are not synced because the SSW source is a .genx file with no pure-Python reader, and the irreducible content is 43 floats + 1 date string.',
         ],
     }
     CALIBRATION_MANIFEST_FILE.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
@@ -609,16 +615,23 @@ def eis_ea(input_wave, short=False, long=False):
     return ea
 
 def eis_ea_nrl(date, wave, short=False, long=False):
-    """Return Warren 2014 effective areas for one date and one or more wavelengths."""
-    eis = read_calib_file()
-    t = (get_time_tai(date) - get_time_tai(eis['t0'][0].decode('utf-8'))) / (86400 * 365.25)
-    ea_knots_SW = eis['a0_sw'][0] * np.exp(-t / eis['tau_sw'][0])
-    ea_knots_LW = eis['a0_lw'][0] * np.exp(-t / eis['tau_lw'][0])
+    """Return Warren 2014 effective areas for one date and one or more wavelengths.
+
+    Mirrors SSW ``eis_ea_nrl.pro``. The model is time-dependent: at each
+    wavelength knot the effective area is ``A0 * exp(-t / TAU)`` where ``t``
+    is the elapsed time in years since the reference date. Negative ``TAU``
+    values produce monotone growth at that knot (the published Warren 2014
+    fit has two such SW knots that compensate the dominant decay).
+    """
+    eis = _load_warren_2014_coefficients()
+    t = (get_time_tai(date) - get_time_tai(eis['t0'])) / (86400 * 365.25)
+    ea_knots_SW = eis['a0_sw'] * np.exp(-t / eis['tau_sw'])
+    ea_knots_LW = eis['a0_lw'] * np.exp(-t / eis['tau_lw'])
 
     if short:
-        wave = eis['wave_area_sw'][0]
+        wave = eis['wave_knots_sw']
     elif long:
-        wave = eis['wave_area_lw'][0]
+        wave = eis['wave_knots_lw']
 
     if isinstance(wave, (int, float)):
         wave = np.array([wave])
@@ -629,10 +642,10 @@ def eis_ea_nrl(date, wave, short=False, long=False):
     for i in range(nWave):
         band = eis_get_band(wave[i])
         if band == 'SW':
-            w = eis['wave_knots_sw'][0]
+            w = eis['wave_knots_sw']
             e = np.log(ea_knots_SW)
         elif band == 'LW':
-            w = eis['wave_knots_lw'][0]
+            w = eis['wave_knots_lw']
             e = np.log(ea_knots_LW)
         else:
             print(f"WAVELENGTH OUT OF BOUNDS {wave[i]}")
@@ -664,10 +677,6 @@ def eis_get_band(wave):
         return 'LW'
     else:
         return ''
-
-def read_calib_file(file_path=LEGACY_WARREN_2014_FILE):
-    """Read the Warren 2014 calibration coefficient cache."""
-    return _load_warren_2014_coefficients(file_path)
 
 def eis_effective_area_read(short=False, long=False):
     """Read a pre-flight effective-area curve for the selected EIS channel."""
