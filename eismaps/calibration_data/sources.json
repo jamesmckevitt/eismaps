@@ -1,0 +1,27 @@
+{
+  "synced_at_utc": "2026-05-26T09:50:57Z",
+  "ssw_root": "/gpfs/data/fs70652/jamesm/solar/ssw",
+  "copied": {
+    "fit_ea": {
+      "source": "/gpfs/data/fs70652/jamesm/solar/ssw/hinode/eis/idl/atest/hwarren/calibration/new/fit_eis_ea_2023-05-04.sav",
+      "destination": "/gpfs/data/fs70652/jamesm/solar/eismaps/package/eismaps/proc/calibration_data/fit_eis_ea_2023-05-04.sav"
+    },
+    "nrl_coefficients": {
+      "source": "/gpfs/data/fs70652/jamesm/solar/ssw/hinode/eis/idl/atest/hwarren/calibration/nrl_ea_coeff_v1.3.genx",
+      "destination": "/gpfs/data/fs70652/jamesm/solar/eismaps/package/eismaps/proc/calibration_data/nrl_ea_coeff_v1.3.genx"
+    },
+    "preflight_long": {
+      "source": "/gpfs/data/fs70652/jamesm/solar/ssw/hinode/eis/response/EIS_EffArea_A.004",
+      "destination": "/gpfs/data/fs70652/jamesm/solar/eismaps/package/eismaps/proc/calibration_data/EIS_EffArea_A.004"
+    },
+    "preflight_short": {
+      "source": "/gpfs/data/fs70652/jamesm/solar/ssw/hinode/eis/response/EIS_EffArea_B.005",
+      "destination": "/gpfs/data/fs70652/jamesm/solar/eismaps/package/eismaps/proc/calibration_data/EIS_EffArea_B.005"
+    }
+  },
+  "notes": [
+    "fit_eis_ea_*.sav is used directly for the Del Zanna 2025-style interpolation path.",
+    "EIS_EffArea_A.* and EIS_EffArea_B.* are used directly for the pre-flight effective areas.",
+    "nrl_ea_coeff_v*.genx is copied for provenance; the Warren 2014 Python path still uses the converted eis_calib_warren_2014.sav cache."
+  ]
+}

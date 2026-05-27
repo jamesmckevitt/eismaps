@@ -1,1 +1,6 @@
-include eismaps/proc/calibration_data/*.sav
+include README.md
+include eismaps/*.dat
+include eismaps/calibration_data/*.sav
+include eismaps/calibration_data/*.genx
+include eismaps/calibration_data/EIS_EffArea_*
+include eismaps/calibration_data/*.json

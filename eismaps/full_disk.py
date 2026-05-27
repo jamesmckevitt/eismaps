@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.coordinates import SkyCoord
@@ -6,7 +7,6 @@ import astropy.units as u
 from datetime import datetime
 from sunpy.coordinates import frames
 import sunpy.map
-import eismaps.utils.find
 from matplotlib.colors import LogNorm
 from tqdm import tqdm
 from sunpy.coordinates.frames import Helioprojective
@@ -17,8 +17,37 @@ from sunpy.coordinates import SphericalScreen
 from typing import List, Optional, Literal, Union, TYPE_CHECKING
 import logging
 
+from eismaps.utils import apply_default_plot_settings
+
 if TYPE_CHECKING:
     import sunpy.map
+
+
+def _normalise_map_collection(map_files):
+    """Return a list of map-like inputs for full-disk assembly."""
+    if isinstance(map_files, (str, os.PathLike)):
+        return [map_files]
+    if hasattr(map_files, 'maps'):
+        return list(map_files.maps)
+    if hasattr(map_files, 'data') and hasattr(map_files, 'meta'):
+        return [map_files]
+    return list(map_files)
+
+
+def _coerce_map_input(map_input):
+    """Return a SunPy map and a readable source label for file or object inputs."""
+    if hasattr(map_input, 'data') and hasattr(map_input, 'meta'):
+        return map_input, '<in-memory-map>'
+    return sunpy.map.Map(map_input), str(map_input)
+
+
+def _resolve_ncpu(ncpu):
+    """Return a validated worker count from ``ncpu`` input."""
+    if ncpu in (None, 'max'):
+        return max(1, os.cpu_count() or 1)
+    if isinstance(ncpu, int) and ncpu > 0:
+        return ncpu
+    raise ValueError("ncpu must be a positive integer or 'max'.")
 
 def _combine_data_max_abs(combined_data: np.ndarray, new_data: np.ndarray) -> np.ndarray:
     """
@@ -90,14 +119,15 @@ def _update_overlap_mask(overlap_mask: np.ndarray, new_data: np.ndarray) -> np.n
 
 
 def make_helioprojective_map(
-    map_files: List[str], 
+    map_files: List[object], 
     overlap: Union[Literal['max', 'mean'], float],
     apply_rotation: bool = True, 
     preserve_limb: bool = True, 
     drag_rotate: bool = False,
     algorithm: Literal['exact', 'interpolation', 'adaptive'] = 'exact',
     remove_off_disk: Union[bool, Literal['before', 'after']] = False,
-    apply_los_correction: bool = False
+    apply_los_correction: bool = False,
+    ncpu: Union[int, Literal['max']] = 'max'
 ):
     """
     Create a helioprojective full disk map from multiple EIS raster maps.
@@ -108,8 +138,9 @@ def make_helioprojective_map(
     
     Parameters
     ----------
-    map_files : List[str]
-        List of file paths to EIS maps to be combined. Must not be empty.
+    map_files : List[object]
+        One map, a map sequence, or a collection of map file paths or
+        ``sunpy.map.Map`` objects to be combined. Must not be empty.
         The first map determines the reference time and coordinate system.
     overlap : {'max', 'mean'} or float
         Method for handling overlapping regions:
@@ -137,6 +168,9 @@ def make_helioprojective_map(
         Divides pixel values by cos(viewing_angle) to correct for foreshortening.
         Useful for radial measurements (e.g., velocities) where only the line-of-sight
         component is observed.
+    ncpu : int or {'max'}, default='max'
+        Number of worker threads used to prepare/reproject input maps.
+        Use 'max' to use all available CPUs.
         
     Returns
     -------
@@ -177,6 +211,8 @@ def make_helioprojective_map(
     >>> # Apply line-of-sight correction for radial measurements
     >>> fd_map, overlap_map = make_helioprojective_map(map_files, 'max', apply_los_correction=True)
     """
+    map_files = _normalise_map_collection(map_files)
+
     # Input validation
     if not map_files:
         raise ValueError("map_files cannot be empty")
@@ -187,7 +223,7 @@ def make_helioprojective_map(
     
     # Load the first map to establish the reference frame
     try:
-        first_map = sunpy.map.Map(map_files[0])
+        first_map, first_map_label = _coerce_map_input(map_files[0])
     except Exception as e:
         print(f"Error loading first map {map_files[0]}: {e}")
         return None, None
@@ -201,7 +237,7 @@ def make_helioprojective_map(
     # Convert to arcseconds using astropy units
     map_dx = (cdelt_wcs[0] * u.Unit(cunit_wcs[0])).to(u.arcsec).value
     map_dy = (cdelt_wcs[1] * u.Unit(cunit_wcs[1])).to(u.arcsec).value
-    
+
     fd_width = round(fd_size_arcsec / map_dx)
     fd_height = round(fd_size_arcsec / map_dy)
 
@@ -218,26 +254,42 @@ def make_helioprojective_map(
         scale=[map_dx, map_dy] * u.arcsec/u.pix,
         projection_code="TAN"
     )
+
+    # Preserve source measurement metadata so full-disk products inherit labels/units.
+    if 'measrmnt' in first_map.meta:
+        fd_header['measrmnt'] = first_map.meta['measrmnt']
+    if 'bunit' in first_map.meta:
+        fd_header['bunit'] = first_map.meta['bunit']
     
-    fd_map = sunpy.map.Map(fd_data, fd_header)
+    fd_map = apply_default_plot_settings(sunpy.map.Map(fd_data, fd_header))
 
     overlap_mask = np.zeros((fd_height, fd_width))
     combined_data = np.full((fd_height, fd_width), np.nan)
 
-    for map_file in tqdm(map_files, desc="Processing maps", leave=False):
+    workers = _resolve_ncpu(ncpu)
+    # SphericalScreen (used iff preserve_limb=True) mutates the class attribute
+    # Helioprojective._assumed_screen on __enter__/__exit__.  That attribute is
+    # shared across all threads, so a thread exiting its `with SphericalScreen`
+    # block resets it to None while another thread is mid-reprojection, causing
+    # `AttributeError: 'NoneType' object has no attribute 'only_off_disk'` in
+    # sunpy.coordinates.frames.Helioprojective.make_3d.  Force serial execution
+    # for this single triggering condition.
+    if preserve_limb and workers > 1:
+        workers = 1
 
+    def _prepare_reprojected_map(map_file):
         try:
-            map = sunpy.map.Map(map_file)
+            map, map_label = _coerce_map_input(map_file)
         except Exception as e:
             print(f"Error loading map {map_file}: {e}. Skipping.")
-            continue
+            return None
 
         # Remove off-disk data if requested before combining (original behavior)
         if remove_off_disk is True or remove_off_disk == 'before':
             map_coords = sunpy.map.all_coordinates_from_map(map)
             on_disk_mask = sunpy.map.coordinate_is_on_solar_disk(map_coords)
             map_data_masked = np.where(on_disk_mask, map.data, np.nan)
-            map = sunpy.map.Map(map_data_masked, map.meta)
+            map = apply_default_plot_settings(sunpy.map.Map(map_data_masked, map.meta))
 
         # Apply line-of-sight correction if requested (before any reprojection)
         if apply_los_correction:
@@ -254,10 +306,8 @@ def make_helioprojective_map(
             # Apply correction: divide by cos(viewing_angle) to correct for foreshortening
             cos_correction = np.ones_like(map.data)
             cos_correction[on_disk] = 1.0 / np.cos(viewing_angle[on_disk])
-            # # Avoid division by very small numbers near the limb
-            # cos_correction = np.where(cos_correction > 10, np.nan, cos_correction)
             corrected_data = map.data * cos_correction
-            map = sunpy.map.Map(corrected_data, map.meta)
+            map = apply_default_plot_settings(sunpy.map.Map(corrected_data, map.meta))
 
         if apply_rotation:
 
@@ -267,6 +317,7 @@ def make_helioprojective_map(
                 map_center_radial_distance = np.sqrt(map.center.Tx.value ** 2 + map.center.Ty.value ** 2)
 
                 def differental_rotate_map_by_drag(map, point):
+                    """Shift a map by the drag-based differential rotation inferred at ``point``."""
                     map_time = datetime.strptime(map.meta['date_obs'], '%Y-%m-%dT%H:%M:%S.%f')
                     first_map_time = datetime.strptime(first_map.meta['date_obs'], '%Y-%m-%dT%H:%M:%S.%f')
                     duration = map_time - first_map_time  # Calculate the time difference between the map and the first map
@@ -310,6 +361,28 @@ def make_helioprojective_map(
             else:
                 map = map.reproject_to(fd_map.wcs, algorithm=algorithm)
 
+        return map
+
+    reprojected_maps = []
+    if workers == 1 or len(map_files) == 1:
+        for map_file in tqdm(map_files, desc="Processing maps", leave=False):
+            reprojected_map = _prepare_reprojected_map(map_file)
+            if reprojected_map is not None:
+                reprojected_maps.append(reprojected_map)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_prepare_reprojected_map, map_file) for map_file in map_files]
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Processing maps", leave=False):
+                try:
+                    reprojected_map = future.result()
+                except Exception as e:
+                    print(f"Error processing map in worker: {e}. Skipping.")
+                    continue
+                if reprojected_map is not None:
+                    reprojected_maps.append(reprojected_map)
+
+    for map in reprojected_maps:
+
         # Combine data based on overlap method
         if overlap == 'max':
             combined_data = _combine_data_max_abs(combined_data, map.data)
@@ -331,34 +404,41 @@ def make_helioprojective_map(
     else:
         # For 'max' or any numeric fill value
         fd_map = sunpy.map.Map(combined_data, fd_map.meta)
+
+    fd_map = apply_default_plot_settings(fd_map)
     
     # Create overlap mask map
-    overlap_map = sunpy.map.Map(overlap_mask, fd_map.meta)
+    overlap_meta = fd_map.meta.copy()
+    overlap_meta['measrmnt'] = 'overlap count'
+    overlap_meta['bunit'] = 'count'
+    overlap_map = apply_default_plot_settings(sunpy.map.Map(overlap_mask, overlap_meta), measurement='overlap')
 
     # Remove off-disk data after combining if requested
     if remove_off_disk == 'after':
         pixel_coords = sunpy.map.all_coordinates_from_map(fd_map)
         on_disk_mask = sunpy.map.coordinate_is_on_solar_disk(pixel_coords)
         fd_map_data = np.where(on_disk_mask, fd_map.data, np.nan)
-        fd_map = sunpy.map.Map(fd_map_data, fd_map.meta)
+        fd_map = apply_default_plot_settings(sunpy.map.Map(fd_map_data, fd_map.meta))
 
     # Tidy up the off limb data if the limb should be cropped, to make sure limb is excluded
     if not preserve_limb:
         pixel_coords = sunpy.map.all_coordinates_from_map(fd_map)
         limb_mask = sunpy.map.coordinate_is_on_solar_disk(pixel_coords)
         fd_map_data = np.where(limb_mask, fd_map.data, np.nan)
-        fd_map = sunpy.map.Map(fd_map_data, fd_map.meta)
+        fd_map = apply_default_plot_settings(sunpy.map.Map(fd_map_data, fd_map.meta))
 
     return fd_map, overlap_map
 
 def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, apply_rotation=True, deg_per_pix=0.1, save_fit=False, save_plot=False, plot_ext='png', plot_dpi=300, skip_done=True):
     """
-    Make a Carrington full disk map from a list of maps.
+    Make a Carrington full disk map from map files or in-memory map objects.
     """
     
+    map_files = _normalise_map_collection(map_files)
+
     # Load the first map to establish the reference frame
     try:
-        first_map = sunpy.map.Map(map_files[0])
+        first_map, _ = _coerce_map_input(map_files[0])
     except Exception as e:
         print(f"Error loading first map {map_files[0]}: {e}")
         return None
@@ -416,7 +496,7 @@ def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, a
     for map_file in map_files:
 
         try:
-            map = sunpy.map.Map(map_file)
+            map, map_label = _coerce_map_input(map_file)
         except Exception as e:
             print(f"Error loading map {map_file}: {e}. Skipping.")
             continue

@@ -1,4 +1,9 @@
-from setuptools import setup, find_packages
+from pathlib import Path
+
+from setuptools import find_packages, setup
+
+
+README = Path(__file__).with_name('README.md').read_text(encoding='utf-8')
 
 setup(
     name='eismaps',
@@ -6,37 +11,36 @@ setup(
     author='James McKevitt',
     author_email='jm2@mssl.ucl.ac.uk',
     description='A toolkit for producing level 3 maps from Hinode/EIS spacecraft data.',
-    # long_description=open('README.md').read(),
-    # long_description_content_type='text/markdown',
-    long_description=('EISMaps is a Python package which is used for the processing of data from the Hinode/EIS spacecraft. It can be used to produce maps of:'
-                  '- intensity,'
-                  '- line width,'
-                  '- doppler velocity,'
-                  '- non-thermal velocity,'
-                  '- blue wing asymmetry,'
-                  'and which can combine individual raster scans into full-disk maps of varying projection.'),
+    license='CC-BY-NC-SA-4.0',
+    long_description=README,
+    long_description_content_type='text/markdown',
     url='https://github.com/jamesmckevitt/eismaps',
     packages=find_packages(),
     include_package_data=True,  # for non-code files in MANIFEST.in
-    package_data={'eismaps': ['utils/*.dat']},
+    package_data={
+        'eismaps': [
+            '*.dat',
+            'calibration_data/*.sav',
+            'calibration_data/*.genx',
+            'calibration_data/EIS_EffArea_*',
+            'calibration_data/*.json',
+        ]
+    },
     install_requires=[
-        'eispac==0.96.0', # this also covers numpy, sunpy, matplotlib, etc.
-        'sunkit-image==0.5.1',
-        'numpy==1.26.4', # Numpy 2.0 is not yet supported by eispac 0.96.0, so 1.26.4 is the latest version that can be used.
+        'eispac>=0.99.3',
+        'numpy>=1.24',
+        'sunkit-image>=0.5.1',
     ],
+    python_requires='>=3.9',
     classifiers=[
-        # license as appropriate
-        'License :: OSI Approved :: MIT License',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.7',
-        'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
     ],
     entry_points={
         'console_scripts': [
-            'eismaps-config=eismaps.config.config_module:main',
-            'eismaps-logo=eismaps.utils.logo:print_logo',
-            # etc.
+            'eismaps-sync-calibration=eismaps.calibration:sync_solarsoft_calibration_data_cli',
         ],
     },
 )
