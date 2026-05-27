@@ -40,7 +40,6 @@ SSW_RESPONSE_DIR = Path('hinode/eis/response')
 __all__ = [
     'apply_calibration',
     'calib_2014',
-    'calib_2023',
     'calib_del_zanna_2013',
     'calib_del_zanna_2025',
     'calibrate_map',
@@ -58,7 +57,6 @@ CALIBRATION_LABELS = {
     'del_zanna_2013': 'Del Zanna 2013',
     'warren_2014': 'Warren 2014',
     'del_zanna_2025': 'Del Zanna 2025',
-    'del_zanna_2023': 'Del Zanna 2025',
 }
 
 DEFAULT_INTENSITY_BUNIT = 'erg / (s sr cm2)'
@@ -553,8 +551,7 @@ def calibrate_map(map, method='del_zanna_2025'):
     """Apply one of the supported intensity calibration methods to a map.
 
     Supported methods are ``ground``, ``ground_cal``, ``preflight``,
-    ``del_zanna_2013``, ``warren_2014``, ``del_zanna_2025``, and the legacy
-    alias ``del_zanna_2023``.
+    ``del_zanna_2013``, ``warren_2014``, and ``del_zanna_2025``.
     """
     methods = {
         'ground': lambda current_map: apply_default_plot_settings(sunpy.map.Map(np.array(current_map.data, copy=True), _calibrated_meta(current_map, 'ground'))),
@@ -563,15 +560,10 @@ def calibrate_map(map, method='del_zanna_2025'):
         'del_zanna_2013': calib_del_zanna_2013,
         'warren_2014': calib_2014,
         'del_zanna_2025': calib_del_zanna_2025,
-        'del_zanna_2023': calib_del_zanna_2025,
     }
     if method not in methods:
         raise ValueError(f'Unknown calibration method: {method}. Choose from {sorted(methods)}')
     return methods[method](map)
-
-def calib_2023(map):
-    """Backward-compatible alias for the Del Zanna 2025 fit-based calibration."""
-    return calib_del_zanna_2025(map)
 
 def calib_2014(map):
     """Calibrate a map using the Warren 2014 sensitivity model."""
