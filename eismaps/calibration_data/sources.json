@@ -1,0 +1,37 @@
+{
+  "synced_at_utc": "2026-05-27T14:37:49Z",
+  "ssw_root": "/gpfs/data/fs70652/jamesm/solar/ssw",
+  "copied": {
+    "fit_ea": {
+      "source": "/gpfs/data/fs70652/jamesm/solar/ssw/hinode/eis/idl/atest/hwarren/calibration/new/fit_eis_ea_2023-05-04.sav",
+      "destination": "/gpfs/data/fs70652/jamesm/solar/eismaps/package/eismaps/calibration_data/fit_eis_ea_2023-05-04.sav"
+    },
+    "preflight_long": {
+      "source": "/gpfs/data/fs70652/jamesm/solar/ssw/hinode/eis/response/EIS_EffArea_A.004",
+      "destination": "/gpfs/data/fs70652/jamesm/solar/eismaps/package/eismaps/calibration_data/EIS_EffArea_A.004"
+    },
+    "preflight_short": {
+      "source": "/gpfs/data/fs70652/jamesm/solar/ssw/hinode/eis/response/EIS_EffArea_B.005",
+      "destination": "/gpfs/data/fs70652/jamesm/solar/eismaps/package/eismaps/calibration_data/EIS_EffArea_B.005"
+    },
+    "del_zanna_2013_preflight_short": {
+      "source": "/gpfs/data/fs70652/jamesm/solar/ssw/hinode/eis/response/EIS_EffArea_B.004",
+      "destination": "/gpfs/data/fs70652/jamesm/solar/eismaps/package/eismaps/calibration_data/EIS_EffArea_B.004"
+    },
+    "del_zanna_2013_preflight_long": {
+      "source": "/gpfs/data/fs70652/jamesm/solar/ssw/hinode/eis/response/EIS_EffArea_A.004",
+      "destination": "/gpfs/data/fs70652/jamesm/solar/eismaps/package/eismaps/calibration_data/EIS_EffArea_A.004"
+    },
+    "width2velocity": {
+      "source": "/gpfs/data/fs70652/jamesm/solar/ssw/hinode/eis/idl/atest/hwarren/eis_width2velocity.dat",
+      "destination": "/gpfs/data/fs70652/jamesm/solar/eismaps/package/eismaps/eis_width2velocity.dat"
+    }
+  },
+  "notes": [
+    "fit_eis_ea_*.sav drives the Del Zanna 2025-style time-interpolated calibration.",
+    "EIS_EffArea_A.* and EIS_EffArea_B.* (text format) are the ground/preflight effective areas read by eis_ea.",
+    "EIS_EffArea_A.004 and EIS_EffArea_B.004 are pinned because the Del Zanna 2013 degradation model is defined against those exact versions.",
+    "eis_width2velocity.dat is the Mazzotta/Landini ion equilibrium table used by the non-thermal velocity helper.",
+    "Warren 2014 NRL coefficients are inlined in calibration.py (WARREN_2014_*). They are not synced because the SSW source is a .genx file with no pure-Python reader, and the irreducible content is 43 floats + 1 date string."
+  ]
+}
