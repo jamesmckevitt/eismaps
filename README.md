@@ -121,16 +121,7 @@ calibrated = apply_calibration(
 )
 ```
 
-Supported user-facing calibration methods:
-
-| `method=` | What it does | Backing files |
-|-----------|--------------|---------------|
-| `ground_cal` | Pre-flight ground calibration only; no time decay applied. Useful as a sanity baseline. | `EIS_EffArea_A.*`, `EIS_EffArea_B.*` |
-| `warren_2014` | Warren et al. (2014) spline-knot model. Time-dependent: at each knot wavelength `Aeff = A0 * exp(-t / TAU)` so the calibration ratio evolves with observation date. | inlined constants (`WARREN_2014_*` in `calibration.py`) |
-| `del_zanna_2013` | Del Zanna (2013) recalibration. Pins ground areas to `EIS_EffArea_A.004` / `EIS_EffArea_B.004` and applies the Del Zanna degradation correction. | `EIS_EffArea_A.004`, `EIS_EffArea_B.004` |
-| `del_zanna_2025` | Latest time-interpolated calibration based on hot/cold line-pair tracking. Best for science use. | `fit_eis_ea_YYYY-MM-DD.sav` |
-
-`del_zanna_2023` is kept as an alias for `del_zanna_2025` for backwards compatibility.
+Supported `method=` values are `ground`, `ground_cal`, `preflight`, `warren_2014`, `del_zanna_2013`, and `del_zanna_2025`.
 
 ### Full-Disk Assembly
 
