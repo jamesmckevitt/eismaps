@@ -127,7 +127,8 @@ def make_helioprojective_map(
     algorithm: Literal['exact', 'interpolation', 'adaptive'] = 'exact',
     remove_off_disk: Union[bool, Literal['before', 'after']] = False,
     apply_los_correction: bool = False,
-    ncpu: Union[int, Literal['max']] = 'max'
+    ncpu: Union[int, Literal['max']] = 'max',
+    reference_map: Literal['first', 'last'] = 'first',
 ):
     """
     Create a helioprojective full disk map from multiple EIS raster maps.
@@ -171,6 +172,13 @@ def make_helioprojective_map(
     ncpu : int or {'max'}, default='max'
         Number of worker threads used to prepare/reproject input maps.
         Use 'max' to use all available CPUs.
+    reference_map : {'first', 'last'}, default='first'
+        Which input map provides the reference time and coordinate frame for
+        the full-disk WCS. When ``apply_rotation=True`` all other maps are
+        differentially rotated to match the chosen reference map's
+        observation time:
+        - 'first': use ``map_files[0]`` (default, original behaviour)
+        - 'last': use ``map_files[-1]``
         
     Returns
     -------
@@ -216,16 +224,20 @@ def make_helioprojective_map(
     # Input validation
     if not map_files:
         raise ValueError("map_files cannot be empty")
-    
+
+    if reference_map not in ('first', 'last'):
+        raise ValueError("reference_map must be 'first' or 'last'.")
+
     # Suppress SunPy INFO messages about missing solar radius metadata
     sunpy_logger = logging.getLogger('sunpy')
     sunpy_logger.setLevel(logging.WARNING)
-    
-    # Load the first map to establish the reference frame
+
+    # Load the reference map to establish the reference frame
+    reference_index = 0 if reference_map == 'first' else -1
     try:
-        first_map, first_map_label = _coerce_map_input(map_files[0])
+        first_map, first_map_label = _coerce_map_input(map_files[reference_index])
     except Exception as e:
-        print(f"Error loading first map {map_files[0]}: {e}")
+        print(f"Error loading reference map {map_files[reference_index]}: {e}")
         return None, None
 
     fd_size_arcsec = 3500  # Hardcoded to avoid anomolous rasters generating incorrect huge full disk maps and crashing with memory errors
@@ -320,8 +332,11 @@ def make_helioprojective_map(
                     """Shift a map by the drag-based differential rotation inferred at ``point``."""
                     map_time = datetime.strptime(map.meta['date_obs'], '%Y-%m-%dT%H:%M:%S.%f')
                     first_map_time = datetime.strptime(first_map.meta['date_obs'], '%Y-%m-%dT%H:%M:%S.%f')
-                    duration = map_time - first_map_time  # Calculate the time difference between the map and the first map
-                    duration = duration.seconds * u.second  # Convert the duration to an astropy time object
+                    duration = map_time - first_map_time  # Signed time difference between this map and the reference map
+                    # Use total_seconds() (signed) rather than .seconds (which is
+                    # always >= 0 and would flip the rotation direction whenever
+                    # the reference map comes after this map, e.g. reference_map='last').
+                    duration = duration.total_seconds() * u.second  # Convert the duration to an astropy quantity
                     diffrot_point = RotatedSunFrame(base=point, duration=duration)  # Rotate the point by the differential rotation
                     transformed_diffrot_point = diffrot_point.transform_to(map.coordinate_frame)
                     shift_x = transformed_diffrot_point.Tx - point.Tx  # Calculate the difference between the original and transformed points
@@ -429,24 +444,35 @@ def make_helioprojective_map(
 
     return fd_map, overlap_map
 
-def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, apply_rotation=True, deg_per_pix=0.1, save_fit=False, save_plot=False, plot_ext='png', plot_dpi=300, skip_done=True):
+def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, apply_rotation=True, deg_per_pix=0.1, save_fit=False, save_plot=False, plot_ext='png', plot_dpi=300, skip_done=True, reference_map='first'):
     """
     Make a Carrington full disk map from map files or in-memory map objects.
+
+    Parameters
+    ----------
+    reference_map : {'first', 'last'}, default='first'
+        Which input map provides the reference observation time and observer
+        metadata for the Carrington WCS. Use 'last' to anchor the output to
+        the final input map instead of the first.
     """
-    
+
+    if reference_map not in ('first', 'last'):
+        raise ValueError("reference_map must be 'first' or 'last'.")
+
     map_files = _normalise_map_collection(map_files)
 
-    # Load the first map to establish the reference frame
+    # Load the reference map to establish the reference frame
+    reference_index = 0 if reference_map == 'first' else -1
     try:
-        first_map, _ = _coerce_map_input(map_files[0])
+        first_map, _ = _coerce_map_input(map_files[reference_index])
     except Exception as e:
-        print(f"Error loading first map {map_files[0]}: {e}")
+        print(f"Error loading reference map {map_files[reference_index]}: {e}")
         return None
 
-    # Derive an output filename from the first input. Support both file paths
-    # and in-memory sunpy maps (the latter happens when the public API hands us
-    # a MapSequence or a list of calibrated maps).
-    first_input = map_files[0]
+    # Derive an output filename from the reference input. Support both file
+    # paths and in-memory sunpy maps (the latter happens when the public API
+    # hands us a MapSequence or a list of calibrated maps).
+    first_input = map_files[reference_index]
     if hasattr(first_input, 'meta') and hasattr(first_input, 'data'):
         date_obs = str(first_input.meta.get('date_obs', '')).strip()
         if not date_obs:
