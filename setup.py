@@ -7,7 +7,7 @@ README = Path(__file__).with_name('README.md').read_text(encoding='utf-8')
 
 setup(
     name='eismaps',
-    version='0.1.0',
+    version='0.2.3',
     author='James McKevitt',
     author_email='jm2@mssl.ucl.ac.uk',
     description='A toolkit for producing level 3 maps from Hinode/EIS spacecraft data.',
