@@ -208,3 +208,31 @@ This will:
 5. Write a manifest at `calibration_data/sources.json` recording source paths, destination paths, the SSW root used, and the UTC sync timestamp.
 
 The Warren 2014 `.sav` cache is intentionally left alone by the sync (see note above).
+
+## Full-Disk Scan Dataset
+
+The table below lists the time coverage of each full-disk scan in the dataset used in Full-Disk Spectroscopy of the Solar Corona Across a Solar Cycle with Hinode/EIS (McKevitt et al., 2026). Start and end times are taken from the filename timestamps of the first and last EIS raster file in each scan directory, and are in UTC.
+
+| Disk | Start (UTC) | End (UTC) |
+|------|-------------|-----------|
+| 20130116 | 2013-01-16 09:37:20 | 2013-01-18 06:00:44 |
+| 20130225 | 2013-02-25 08:11:49 | 2013-02-28 10:46:20 |
+| 20150401 | 2015-04-01 09:14:49 | 2015-04-03 00:44:13 |
+| 20151018 | 2015-10-18 10:27:19 | 2015-10-20 00:26:12 |
+| 20171021 | 2017-10-21 10:49:49 | 2017-10-23 02:24:12 |
+| 20180825 | 2018-08-25 12:25:41 | 2018-08-27 05:23:13 |
+| 20181028 | 2018-10-28 10:32:49 | 2018-10-30 00:30:41 |
+| 20190413 | 2019-04-13 17:37:41 | 2019-04-15 10:14:42 |
+| 20190505 | 2019-05-05 12:16:13 | 2019-05-07 05:17:42 |
+| 20190912 | 2019-09-12 12:02:20 | 2019-09-14 02:50:43 |
+| 20200118 | 2020-01-18 11:07:20 | 2020-01-20 01:05:12 |
+| 20200422 | 2020-04-22 13:12:40 | 2020-04-24 06:11:12 |
+| 20200906 | 2020-09-06 14:56:43 | 2020-09-08 06:02:41 |
+| 20210418 | 2021-04-18 00:37:43 | 2021-04-19 17:52:12 |
+| 20211016 | 2021-10-16 12:17:20 | 2021-10-18 02:47:12 |
+| 20220507 | 2022-05-07 12:31:50 | 2022-05-09 05:31:12 |
+| 20220925 | (no data) | (no data) |
+| 20230429 | 2023-04-29 10:59:20 | 2023-05-01 03:57:42 |
+| 20230905 | (no data) | (no data) |
+| 20240310 | 2024-03-10 10:16:10 | 2024-03-11 21:35:41 |
+| 20240320 | 2024-03-20 05:04:49 | 2024-03-22 01:18:43 |
