@@ -231,6 +231,15 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
                 print(f"Skipping {m} map for {file_name} (line {line_id}, component {main_component}): get_map returned None.")
                 continue
 
+            # EISPAC flags spectra it could not fit with status <= 0 but leaves
+            # zeros in their intensity, width and error arrays (and -c in the
+            # velocity, from a zero centroid). Mark them as missing.
+            failed = np.asarray(fit_res.fit['status']) <= 0
+            if failed.any():
+                if not np.issubdtype(m_map.data.dtype, np.floating):
+                    raise TypeError(f'{m} map is not floating point; cannot mark failed fits.')
+                m_map.data[failed] = np.nan
+
             if clip and m in UNCERTAINTY_MEASUREMENTS:
                 raise ValueError('clip=True filters each map independently, so it cannot be combined with uncertainty measurements.')
             if vel_los_correct and m == 'vel_err':
@@ -363,8 +372,11 @@ def get_ntv_map(fit_res, component=None):
 def get_uncertainty_map(fit_res, measurement, component=None):
     """Create a map of the 1-sigma fit uncertainty of ``int``, ``vel`` or ``wid``.
 
-    The values are EISPAC's fit errors (``err_int``, ``err_vel``,
-    ``err_wid``), in the same units as the measurement.
+    ``int`` and ``wid`` use EISPAC's fit errors (``err_int``, ``err_width``).
+    For ``vel`` the uncertainty is ``c * sigma_centroid / rest_wavelength``
+    from the fitted centroid error. EISPAC's own ``err_vel`` is not used: it
+    is the centroid's relative error times the velocity, so it vanishes
+    wherever the velocity is close to zero.
     """
     if component is None: component = fit_res.fit['main_component']
 
@@ -372,11 +384,20 @@ def get_uncertainty_map(fit_res, measurement, component=None):
     if value_map.uncertainty is None:
         raise ValueError(f'The {measurement} map has no uncertainty attached.')
 
+    if measurement == 'vel':
+        from astropy import constants as const
+        centroid_index = 1 + 3 * component
+        rest_wave = float(fit_res.parinfo[centroid_index]['value'])
+        centroid_error = np.asarray(fit_res.fit['perror'][:, :, centroid_index], dtype=float)
+        errors = const.c.to_value('km/s') * centroid_error / rest_wave
+    else:
+        errors = np.array(value_map.uncertainty.array, dtype=float)
+
     map_meta = value_map.meta.copy()
     map_meta['measrmnt'] = f"{value_map.meta['measrmnt']} uncertainty"
     # A plain GenericMap: through the sunpy.map.Map factory this would become
     # an eispac EISMap, whose velocity colour scaling fails on NaN values.
-    error_map = sunpy.map.GenericMap(np.array(value_map.uncertainty.array, dtype=float), map_meta)
+    error_map = sunpy.map.GenericMap(errors, map_meta)
     return apply_default_plot_settings(error_map)
 
 # def get_bwa_map(fit_res):
