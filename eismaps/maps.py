@@ -14,7 +14,8 @@ from eismaps.utils import change_line_format
 from eismaps.utils import apply_default_plot_settings
 
 CC = 2.9979E+5 # speed of light
-VALID_MEASUREMENTS = ['int', 'vel', 'wid', 'ntv', 'chi2']
+UNCERTAINTY_MEASUREMENTS = {'int_err': 'int', 'vel_err': 'vel', 'wid_err': 'wid'}
+VALID_MEASUREMENTS = ['int', 'vel', 'wid', 'ntv', 'chi2', *UNCERTAINTY_MEASUREMENTS]
 
 def map_sd_filter(map,stds=3,log=False):
     """Mask outliers in a map using a standard-deviation threshold.
@@ -220,6 +221,8 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
                 m_map = get_ntv_map(fit_res, component=main_component)
             elif m == 'chi2':
                 m_map = get_chi2_map(fit_res, component=main_component)
+            elif m in UNCERTAINTY_MEASUREMENTS:
+                m_map = get_uncertainty_map(fit_res, UNCERTAINTY_MEASUREMENTS[m], component=main_component)
             else:
                 m_map = fit_res.get_map(component=main_component, measurement=m)
 
@@ -227,6 +230,11 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
                 line_id = fit_res.meta.get('line_id', 'unknown')
                 print(f"Skipping {m} map for {file_name} (line {line_id}, component {main_component}): get_map returned None.")
                 continue
+
+            if clip and m in UNCERTAINTY_MEASUREMENTS:
+                raise ValueError('clip=True filters each map independently, so it cannot be combined with uncertainty measurements.')
+            if vel_los_correct and m == 'vel_err':
+                raise ValueError('vel_los_correct=True is not applied to vel_err; request vel_err without it.')
 
             if clip:
                 if m == 'int':
@@ -256,7 +264,10 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
 
                 corrected_data = np.full(m_map.data.shape, np.nan, dtype=float)
                 np.divide(m_map.data, los_factor, out=corrected_data, where=np.abs(los_factor) > 1e-6)
-                m_map = sunpy.map.Map(corrected_data, m_map.meta)
+                # Replace the values in place: rebuilding the map through the
+                # sunpy.map.Map factory makes an eispac EISMap, whose velocity
+                # colour scaling fails on the NaNs set off the disk here.
+                m_map.data[...] = corrected_data
 
             m_map = apply_default_plot_settings(m_map, measurement=m)
 
@@ -348,6 +359,25 @@ def get_ntv_map(fit_res, component=None):
     map_ntv = sunpy.map.Map(v_nt, map_meta) # create a non-thermal velocity map
 
     return apply_default_plot_settings(map_ntv, measurement='ntv')
+
+def get_uncertainty_map(fit_res, measurement, component=None):
+    """Create a map of the 1-sigma fit uncertainty of ``int``, ``vel`` or ``wid``.
+
+    The values are EISPAC's fit errors (``err_int``, ``err_vel``,
+    ``err_wid``), in the same units as the measurement.
+    """
+    if component is None: component = fit_res.fit['main_component']
+
+    value_map = fit_res.get_map(component=component, measurement=measurement)
+    if value_map.uncertainty is None:
+        raise ValueError(f'The {measurement} map has no uncertainty attached.')
+
+    map_meta = value_map.meta.copy()
+    map_meta['measrmnt'] = f"{value_map.meta['measrmnt']} uncertainty"
+    # A plain GenericMap: through the sunpy.map.Map factory this would become
+    # an eispac EISMap, whose velocity colour scaling fails on NaN values.
+    error_map = sunpy.map.GenericMap(np.array(value_map.uncertainty.array, dtype=float), map_meta)
+    return apply_default_plot_settings(error_map)
 
 # def get_bwa_map(fit_res):
 #     # blue wing asymmetry
