@@ -99,7 +99,8 @@ Behaviour:
 
 - a single requested measurement returns a SunPy map or `MapSequence`
 - multiple requested measurements return a dictionary keyed by measurement name
-- supported measurements are `int`, `vel`, `wid`, `ntv`, and `chi2`
+- supported measurements are `int`, `vel`, `wid`, `ntv`, `chi2`, and the fit uncertainties `int_err`, `vel_err` and `wid_err`
+- spectra EISPAC could not fit are NaN in every measurement
 
 Useful options:
 
@@ -121,7 +122,7 @@ calibrated = apply_calibration(
 )
 ```
 
-Supported `method=` values are `ground`, `ground_cal`, `preflight`, `warren_2014`, `del_zanna_2013`, and `del_zanna_2025`.
+Supported `method=` values are `ground`, `ground_cal`, `preflight`, `warren_2014`, `del_zanna_2013`, and `del_zanna_2025`. `int_err` maps can be calibrated in the same way. The factor applied is stored in each calibrated map's `calfact` keyword, and `eismaps.calibration.calibration_factor(date, wavelength, method)` returns it directly.
 
 ### Full-Disk Assembly
 
@@ -149,6 +150,24 @@ Important options:
 - `preserve_limb=True` keeps off-limb signal during reprojection
 - `algorithm='exact'`, `'interpolation'`, or `'adaptive'` selects the reprojection method
 - `remove_off_disk='before'` or `'after'` controls whether off-disk pixels are masked before or after reprojection
+
+To carry uncertainties and other per-raster quantities through the mosaic, pass them alongside the values:
+
+```python
+fd_int, overlap_map, extras = make_helioprojective_map(
+    calibrated_intensity,
+    overlap='max',
+    algorithm='exact',
+    uncertainty=calibrated_intensity_errors,
+    companions={'chi2': map_products['chi2']},
+)
+fd_int_err = extras['uncertainty']
+fd_chi2 = extras['chi2']
+```
+
+- `uncertainty` and `companions` need `algorithm='exact'`; the values are then identical to those without them
+- with `overlap='max'`, each pixel's uncertainty and companions come from the raster that supplied its value; with `overlap='mean'` the uncertainty is that of the mean
+- the uncertainty of a resampled pixel accounts for the EIS pixels it averages, assuming their errors are independent
 
 Use `make_carrington_map()` when you want a Carrington projection instead of a helioprojective full-disk map.
 
