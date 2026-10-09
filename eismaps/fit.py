@@ -127,7 +127,7 @@ def fit_specific_line(file, iwin, template, lines_to_fit='all', lock_to_window=F
     if filter_chi2 is not None:
         # where the chi2 is greater than the filter_chi2, set the fit to np.nan
         for key in fit.fit.keys():
-            if key in ['int', 'int_err', 'vel', 'vel_err', 'wid', 'wid_err']:
+            if key in ['int', 'err_int', 'vel', 'err_vel', 'wid', 'err_wid']:
                 fit.fit[key][fit.fit['chi2'] > filter_chi2] = np.nan
 
     kept_saved_fits = []
@@ -322,9 +322,14 @@ def batch(files, lines_to_fit='all', ncpu='max', filter_chi2=None, save=True, ou
                             fit_results.append(fit_obj)
                         continue
 
+                # Save only the lines this template was chosen for. A template
+                # can also contain a line that another template in the window
+                # was chosen for; saving it here would leave that line's file
+                # from the wrong template, with the other template's component
+                # index applied when it is read back.
                 fit_result = fit_specific_line(
                     file, iwin, tpath,
-                    lines_to_fit=lines_to_fit,
+                    lines_to_fit=[line_id for line_id, _ in line_idx_pairs],
                     ncpu=ncpu, filter_chi2=filter_chi2,
                     save=save, output_dir=output_dir, output_dir_tree=output_dir_tree,
                 )
