@@ -127,7 +127,7 @@ def fit_specific_line(file, iwin, template, lines_to_fit='all', lock_to_window=F
     if filter_chi2 is not None:
         # where the chi2 is greater than the filter_chi2, set the fit to np.nan
         for key in fit.fit.keys():
-            if key in ['int', 'err_int', 'vel', 'err_vel', 'width', 'err_width', 'perror']:
+            if key in ['int', 'err_int', 'vel', 'err_vel', 'width', 'err_width', 'params', 'perror']:
                 fit.fit[key][fit.fit['chi2'] > filter_chi2] = np.nan
 
     kept_saved_fits = []
