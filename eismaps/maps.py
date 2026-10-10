@@ -1,5 +1,6 @@
 """Convert EISPAC fit results into raster maps and plots."""
 
+import copy
 import eispac
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -223,6 +224,8 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
                 m_map = get_chi2_map(fit_res, component=main_component)
             elif m in UNCERTAINTY_MEASUREMENTS:
                 m_map = get_uncertainty_map(fit_res, UNCERTAINTY_MEASUREMENTS[m], component=main_component)
+            elif m == 'vel':
+                m_map = get_velocity_map(fit_res, component=main_component)
             else:
                 m_map = fit_res.get_map(component=main_component, measurement=m)
 
@@ -233,9 +236,6 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
 
             if not np.issubdtype(m_map.data.dtype, np.floating):
                 raise TypeError(f'{m} map is not floating point; cannot mark failed fits.')
-
-            if m == 'vel':
-                m_map.data[...] = get_velocity(fit_res, component=main_component)
 
             # Pixels without a usable fit of this line are marked as missing
             # in every measurement (see valid_fit_mask).
@@ -347,6 +347,22 @@ def get_velocity(fit_res, component=None):
     return corrected
 
 
+def get_velocity_map(fit_res, component=None):
+    """Return a map of :func:`get_velocity`, with EISPAC's velocity metadata.
+
+    EISPAC's EISMap fails on velocity data that contain NaN (as filter_chi2
+    leaves them), so the map is made from a copy of the fit whose velocity
+    array is zeros and the velocities are filled in afterwards.
+    """
+    if component is None: component = fit_res.fit['main_component']
+    placeholder = copy.copy(fit_res)
+    placeholder.fit = dict(fit_res.fit)
+    placeholder.fit['vel'] = np.zeros_like(np.asarray(fit_res.fit['vel'], dtype=float))
+    vel_map = placeholder.get_map(component=component, measurement='vel')
+    vel_map.data[...] = get_velocity(fit_res, component=component)
+    return vel_map
+
+
 def get_ntv_map(fit_res, component=None):
     """Create a non-thermal velocity map from an EISPAC fit result.
 
@@ -424,7 +440,10 @@ def get_uncertainty_map(fit_res, measurement, component=None):
     """
     if component is None: component = fit_res.fit['main_component']
 
-    value_map = fit_res.get_map(component=component, measurement=measurement)
+    if measurement == 'vel':
+        value_map = get_velocity_map(fit_res, component=component)
+    else:
+        value_map = fit_res.get_map(component=component, measurement=measurement)
     if value_map.uncertainty is None:
         raise ValueError(f'The {measurement} map has no uncertainty attached.')
 
