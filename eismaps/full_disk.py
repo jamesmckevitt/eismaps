@@ -97,13 +97,15 @@ def _combine_data_mean(combined_data: np.ndarray, new_data: np.ndarray) -> np.nd
     )
 
 
-def _combine_data_with_fill(combined_data: np.ndarray, new_data: np.ndarray, fill_value: float) -> np.ndarray:
+def _combine_data_with_fill(combined_data: np.ndarray, new_data: np.ndarray, fill_value: float, covered: Optional[np.ndarray] = None) -> np.ndarray:
     """
     Combine data by setting overlapping regions to a specified fill value.
     
     Where both have data, set to fill_value. Otherwise use the single valid value.
+    ``covered`` marks pixels that earlier maps already supplied; pass it when
+    the fill value can be NaN, which would otherwise look like a gap.
     """
-    combined_has_data = ~np.isnan(combined_data)
+    combined_has_data = ~np.isnan(combined_data) if covered is None else covered
     new_has_data = ~np.isnan(new_data)
     
     return np.where(
@@ -448,12 +450,13 @@ def _mosaic_with_exact_weights(
                 companion_sums[name] = np.where(arr_valid, companion_sums[name] + arr, companion_sums[name])
                 companion_counts[name] = companion_counts[name] + arr_valid
         else:
-            already = ~np.isnan(combined)
+            # Coverage comes from the count, since the fill value may be NaN.
+            already = count > 0
             if new_sigma is not None:
                 combined_sigma = np.where(already & new_valid, overlap, np.where(already, combined_sigma, new_sigma))
             for name, arr in new_companions.items():
                 combined_companions[name] = np.where(already & new_valid, overlap, np.where(already, combined_companions[name], arr))
-            combined = _combine_data_with_fill(combined, new, overlap)
+            combined = _combine_data_with_fill(combined, new, overlap, covered=already)
 
         count = count + new_valid
 
@@ -775,7 +778,7 @@ def make_helioprojective_map(
             combined_data = _combine_data_mean(combined_data, map.data)
         else:
             # overlap is a numeric value (e.g., np.nan, 0, -999)
-            combined_data = _combine_data_with_fill(combined_data, map.data, overlap)
+            combined_data = _combine_data_with_fill(combined_data, map.data, overlap, covered=overlap_mask > 0)
         
         # Update overlap mask for all methods
         overlap_mask = _update_overlap_mask(overlap_mask, map.data)
