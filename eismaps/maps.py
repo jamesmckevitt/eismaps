@@ -231,14 +231,15 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
                 print(f"Skipping {m} map for {file_name} (line {line_id}, component {main_component}): get_map returned None.")
                 continue
 
-            # EISPAC flags spectra it could not fit with status <= 0 but leaves
-            # zeros in their intensity, width and error arrays (and -c in the
-            # velocity, from a zero centroid). Mark them as missing.
-            failed = np.asarray(fit_res.fit['status']) <= 0
-            if failed.any():
-                if not np.issubdtype(m_map.data.dtype, np.floating):
-                    raise TypeError(f'{m} map is not floating point; cannot mark failed fits.')
-                m_map.data[failed] = np.nan
+            if not np.issubdtype(m_map.data.dtype, np.floating):
+                raise TypeError(f'{m} map is not floating point; cannot mark failed fits.')
+
+            if m == 'vel':
+                m_map.data[...] = get_velocity(fit_res, component=main_component)
+
+            # Pixels without a usable fit of this line are marked as missing
+            # in every measurement (see valid_fit_mask).
+            m_map.data[~valid_fit_mask(fit_res, component=main_component)] = np.nan
 
             if clip and m in UNCERTAINTY_MEASUREMENTS:
                 raise ValueError('clip=True filters each map independently, so it cannot be combined with uncertainty measurements.')
@@ -302,6 +303,49 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
             maps_by_measurement[m].append(m_map)
 
     return _package_maps(measurement, maps_by_measurement)
+
+def valid_fit_mask(fit_res, component=None):
+    """Return True where a raster pixel has a usable fit of one component.
+
+    EISPAC flags spectra it could not fit with ``status <= 0``, but leaves
+    zeros in their intensity, width and error arrays and about -c in the
+    velocity. A fit can also converge with the line amplitude at its lower
+    limit of zero: no line is detected, the errors come out as zero and the
+    centroid and width stay at their starting values. Both are excluded.
+    """
+    if component is None: component = fit_res.fit['main_component']
+    status = np.asarray(fit_res.fit['status'])
+    peak = np.asarray(fit_res.fit['params'][:, :, 3 * component])
+    return (status > 0) & (peak > 0)
+
+
+def get_velocity(fit_res, component=None):
+    """Return the Doppler velocity of one component in km/s.
+
+    This is EISPAC's velocity, ``c * (centroid - rest) / rest`` with the
+    rest wavelength from the template, minus the median velocity of each
+    raster column (slit position), which EISPAC uses as a rough correction
+    for spacecraft temperature changes. Here the median is taken over the
+    pixels with a usable fit only (see valid_fit_mask); EISPAC's median
+    also counts failed fits, whose velocity is about -c. Columns without a
+    usable fit are NaN.
+    """
+    from astropy import constants as const
+
+    if component is None: component = fit_res.fit['main_component']
+    centroid_index = 1 + 3 * component
+    rest_wave = float(fit_res.parinfo[centroid_index]['value'])
+    centroid = np.asarray(fit_res.fit['params'][:, :, centroid_index], dtype=float)
+    velocity = const.c.to_value('km/s') * (centroid - rest_wave) / rest_wave
+
+    valid = valid_fit_mask(fit_res, component=component)
+    corrected = np.full(velocity.shape, np.nan)
+    for column in range(velocity.shape[1]):
+        good = valid[:, column]
+        if good.any():
+            corrected[:, column] = velocity[:, column] - np.median(velocity[good, column])
+    return corrected
+
 
 def get_ntv_map(fit_res, component=None):
     """Create a non-thermal velocity map from an EISPAC fit result.

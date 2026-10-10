@@ -100,7 +100,8 @@ Behaviour:
 - a single requested measurement returns a SunPy map or `MapSequence`
 - multiple requested measurements return a dictionary keyed by measurement name
 - supported measurements are `int`, `vel`, `wid`, `ntv`, `chi2`, and the fit uncertainties `int_err`, `vel_err` and `wid_err`
-- spectra EISPAC could not fit are NaN in every measurement
+- pixels without a usable fit are NaN in every measurement: spectra EISPAC could not fit, and fits whose line amplitude is zero
+- `vel` is EISPAC's Doppler velocity minus the median of each raster column, with the median taken over usable fits only
 
 Useful options:
 
