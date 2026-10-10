@@ -593,9 +593,11 @@ def calibration_factor(date, wavelength, method='del_zanna_2025'):
 
 def _calibrate_with_method(map, method):
     """Multiply a map by its calibration factor and record the calibration in its metadata."""
-    wavelength = _map_line_wavelength(map)
-    factor = calibration_factor(map.date.isot, wavelength, method)
-    if method not in ('ground', 'ground_cal', 'preflight'):
+    if method in ('ground', 'ground_cal', 'preflight'):
+        factor = 1.0
+    else:
+        wavelength = _map_line_wavelength(map)
+        factor = calibration_factor(map.date.isot, wavelength, method)
         print(f'Calibration ratio for {wavelength} A: {factor} using map date {map.date.isot} was applied.')
     calibrated_map = sunpy.map.Map(np.asarray(map.data, dtype=float) * factor, _calibrated_meta(map, method, factor))
     return apply_default_plot_settings(calibrated_map)
