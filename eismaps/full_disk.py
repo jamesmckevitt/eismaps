@@ -244,10 +244,9 @@ def _exact_overlap_weights(map_in, wcs_out, shape_out, output_corners):
     deg_to_rad = 0.017453292519943295  # the constant the C kernel uses
     ilon = (_pixel_corners(xw_in).reshape(-1, 4) * deg_to_rad)[in_index]
     ilat = (_pixel_corners(yw_in).reshape(-1, 4) * deg_to_rad)[in_index]
-    out_lon_corners = _pixel_corners(xw_out) * deg_to_rad
-    out_lat_corners = _pixel_corners(yw_out) * deg_to_rad
-    olon = out_lon_corners[jj, ii]
-    olat = out_lat_corners[jj, ii]
+    # Corners of the candidate output pixels only, in _pixel_corners order.
+    olon = np.stack([xw_out[jj + 1, ii], xw_out[jj + 1, ii + 1], xw_out[jj, ii + 1], xw_out[jj, ii]], axis=-1) * deg_to_rad
+    olat = np.stack([yw_out[jj + 1, ii], yw_out[jj + 1, ii + 1], yw_out[jj, ii + 1], yw_out[jj, ii]], axis=-1) * deg_to_rad
 
     overlap, _ = _compute_overlap(np.ascontiguousarray(ilon), np.ascontiguousarray(ilat),
                                   np.ascontiguousarray(olon), np.ascontiguousarray(olat))
@@ -335,11 +334,20 @@ def _los_correction_factor(map_obj):
 
 
 def _companion_array(companion_input, primary_map, label):
-    """Return a companion map's data, checking it lies on the primary raster grid."""
+    """Return a companion map's data, checking it lies on the primary raster grid.
+
+    The companion is resampled with the primary map's weights, so it must have
+    the same shape and the same pixel-to-sky mapping. Keywords that do not
+    change that mapping (dates, observer) are not compared.
+    """
+    from astropy.wcs import WCSCOMPARE_ANCILLARY
+
     companion_map, _ = _coerce_map_input(companion_input)
     data = np.asarray(companion_map.data, dtype=float)
     if data.shape != primary_map.data.shape:
         raise ValueError(f"{label} map has shape {data.shape} but its primary map has shape {primary_map.data.shape}.")
+    if not primary_map.wcs.wcs.compare(companion_map.wcs.wcs, cmp=WCSCOMPARE_ANCILLARY, tolerance=1e-10):
+        raise ValueError(f"{label} map is not on the same pixel grid as its primary map.")
     return data, companion_map
 
 
@@ -569,9 +577,9 @@ def make_helioprojective_map(
         uncertainty of the mean. Requires ``algorithm='exact'``.
     companions : dict, optional
         Other quantities that should follow the value maps, for example a
-        chi-squared map or a map of observation times. Keys are names, values
-        are lists of maps, one per entry of ``map_files`` and on the same
-        raster grid. They are resampled with the same weights as the values;
+        chi-squared map or a map of observation times. Keys are names (any
+        but ``'uncertainty'``), values are lists of maps, one per entry of
+        ``map_files`` and on the same raster grid. They are resampled with the same weights as the values;
         with ``overlap='max'`` each pixel comes from the raster that supplied
         the value, with ``overlap='mean'`` they are averaged. Requires
         ``algorithm='exact'``.
@@ -682,6 +690,8 @@ def make_helioprojective_map(
             if len(uncertainty_inputs) != len(map_files):
                 raise ValueError(f"Got {len(uncertainty_inputs)} uncertainty maps for {len(map_files)} value maps.")
         companion_inputs = {}
+        if 'uncertainty' in (companions or {}):
+            raise ValueError("'uncertainty' is reserved for the propagated uncertainty; give the companion another name.")
         for name, companion in (companions or {}).items():
             companion_inputs[name] = _normalise_map_collection(companion)
             if len(companion_inputs[name]) != len(map_files):
