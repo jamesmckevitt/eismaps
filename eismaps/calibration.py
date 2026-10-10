@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+from astropy.time import Time
 from scipy.interpolate import interp1d
 from scipy.io import readsav
 import sunpy.map
@@ -43,6 +44,7 @@ __all__ = [
     'calib_del_zanna_2013',
     'calib_del_zanna_2025',
     'calibrate_map',
+    'calibration_factor',
     'eis_ltds',
     'interpol_eis_ea',
     'eis_ea',
@@ -239,28 +241,54 @@ def _resolve_ssw_root(ssw_root=None):
 
 
 def _spline_interpolate(x_values, y_values, target_values):
-    """Sample a calibration curve using cubic interpolation where possible."""
+    """Sample a calibration curve as IDL's ``INTERPOL(v, x, u, /SPLINE)`` does.
+
+    The SSW calibration routines (eis_ea.pro, interpol_eis_ea.pro,
+    eis_ltds.pro) all interpolate this way. For each target, IDL takes the
+    four tabulated points around it (starting one below the interval that
+    contains it, kept inside the table) and evaluates the natural cubic
+    spline through those four points. Targets outside the table use the four
+    points at that end. ``x_values`` must be increasing.
+    """
+    from scipy.interpolate import CubicSpline
+
     x_values = np.asarray(x_values, dtype=float)
     y_values = np.asarray(y_values, dtype=float)
     target_values = np.atleast_1d(np.asarray(target_values, dtype=float))
-    kind = 'cubic' if x_values.size >= 4 else 'linear'
-    sampled = interp1d(x_values, y_values, kind=kind, bounds_error=False, fill_value='extrapolate')(target_values)
+    m = x_values.size
+    if m < 4:
+        return np.interp(target_values, x_values, y_values)
+
+    # VALUE_LOCATE, clipped to [0, m-2] and then to [1, m-3] as INTERPOL does.
+    interval = np.clip(np.searchsorted(x_values, target_values, side='right') - 1, 0, m - 2)
+    start = np.clip(interval, 1, m - 3) - 1
+    sampled = np.empty(target_values.shape, dtype=float)
+    for s0 in np.unique(start):
+        use = start == s0
+        spline = CubicSpline(x_values[s0:s0 + 4], y_values[s0:s0 + 4], bc_type='natural')
+        sampled[use] = spline(target_values[use])
     return sampled
 
 
-def _calibrated_meta(map_obj, method):
-    """Return updated metadata for a calibrated intensity map."""
+def _calibrated_meta(map_obj, method, factor=None):
+    """Return updated metadata for a calibrated intensity (or intensity uncertainty) map.
+
+    The measurement label becomes ``Intensity (<method>)`` or
+    ``Intensity uncertainty (<method>)``, and the method and the factor that
+    was applied are recorded in ``calib`` and ``calfact``.
+    """
     calibration_label = CALIBRATION_LABELS.get(method, method.replace('_', ' ').title())
     base_measurement = str(map_obj.meta.get('measrmnt', '')).strip()
-    if not base_measurement or 'intensity' not in base_measurement.lower():
-        base_measurement = 'Intensity'
-    elif ' (' in base_measurement:
+    if ' (' in base_measurement:
         base_measurement = base_measurement.split(' (', 1)[0]
-    else:
-        base_measurement = 'Intensity'
+    is_uncertainty = 'uncertainty' in base_measurement.lower()
+    base_measurement = 'Intensity uncertainty' if is_uncertainty else 'Intensity'
 
     calibrated_meta = map_obj.meta.copy()
     calibrated_meta['measrmnt'] = f'{base_measurement} ({calibration_label})'
+    calibrated_meta['calib'] = method
+    if factor is not None:
+        calibrated_meta['calfact'] = float(factor)
 
     current_bunit = str(calibrated_meta.get('bunit', '')).strip()
     if not current_bunit:
@@ -365,10 +393,9 @@ def anytim2tai(time_str):
     else:
         time_str = re.sub(r'[^\w\s]', '', time_str)
     dt = datetime.datetime.strptime(time_str, '%Y%m%d %H%M%S')
-    seconds_since_epoch = (dt - datetime.datetime(1970, 1, 1)).total_seconds()
-    tai_offset = (datetime.datetime(1970, 1, 1) - datetime.datetime(1958, 1, 1)).total_seconds()
-    tai_time = seconds_since_epoch + tai_offset + 37
-    return tai_time
+    # Seconds since 1958-01-01 TAI, counting the leap seconds in between as
+    # SSW's anytim2tai does.
+    return float((Time(dt, scale='utc').tai - Time('1958-01-01T00:00:00', scale='tai')).to_value('s'))
 
 def interpol_eis_ea(date, wavelength, short=False, long=False, radcal=False, ea_file=None, quiet=False):
     """Interpolate Del Zanna fit-based effective areas for one observation date."""
@@ -429,7 +456,7 @@ def interpol_eis_ea(date, wavelength, short=False, long=False, radcal=False, ea_
         new_ea[w] = np.interp(in_tai, ref_tai, ea_values)
 
     if not short and not long:
-        out_ea = interp1d(ref_wave, new_ea, kind='cubic')(wavelength)
+        out_ea = _spline_interpolate(ref_wave, new_ea, wavelength)
     else:
         wavelength = ref_wave
         out_ea = new_ea
@@ -525,54 +552,83 @@ def eis_ltds(date, wavelengths, quiet=False, undecay=False):
     return corrections
 
 
-def calib_del_zanna_2013(map):
-    """Calibrate a map using the Del Zanna 2013 time-dependent sensitivity model."""
-    match = re.search(r'\d+\.\d+', map.meta['line_id'])
+def _map_line_wavelength(map_obj):
+    """Return the rest wavelength parsed from a map's ``line_id``."""
+    match = re.search(r'\d+\.\d+', str(map_obj.meta.get('line_id', '')))
     if match is None:
         raise ValueError('The map metadata does not contain a parsable line_id wavelength.')
-    wavelength = float(match.group())
-    calib_ratio = eis_ltds(map.date.value, wavelength)
-    print(f'Calibration ratio for {wavelength} A: {calib_ratio} using map date {map.date.value} was applied.')
-    calibrated_map = sunpy.map.Map(map.data * calib_ratio, _calibrated_meta(map, 'del_zanna_2013'))
+    return float(match.group())
+
+
+CALIBRATION_METHODS = ('ground', 'ground_cal', 'preflight', 'del_zanna_2013', 'warren_2014', 'del_zanna_2025')
+
+
+def calibration_factor(date, wavelength, method='del_zanna_2025'):
+    """Return the factor that converts a pre-flight EISPAC intensity to ``method``.
+
+    EISPAC intensities use the pre-flight (ground) radiometric calibration.
+    Multiplying them, or their uncertainties, by this factor gives the
+    intensity in the chosen calibration. ``ground``, ``ground_cal`` and
+    ``preflight`` return 1.
+
+    Parameters
+    ----------
+    date : str
+        Observation time (ISO format).
+    wavelength : float
+        Rest wavelength of the line in Angstrom.
+    method : str, default='del_zanna_2025'
+        One of ``CALIBRATION_METHODS``.
+    """
+    if method in ('ground', 'ground_cal', 'preflight'):
+        return 1.0
+    if method == 'del_zanna_2013':
+        return float(eis_ltds(date, wavelength, quiet=True))
+    if method == 'warren_2014':
+        return float(eis_ea(wavelength) / eis_ea_nrl(date, wavelength))
+    if method == 'del_zanna_2025':
+        return float(np.squeeze(eis_ea(wavelength) / interpol_eis_ea(date, wavelength, quiet=True)))
+    raise ValueError(f'Unknown calibration method: {method}. Choose from {sorted(CALIBRATION_METHODS)}')
+
+
+def _calibrate_with_method(map, method):
+    """Multiply a map by its calibration factor and record the calibration in its metadata."""
+    if method in ('ground', 'ground_cal', 'preflight'):
+        factor = 1.0
+    else:
+        wavelength = _map_line_wavelength(map)
+        factor = calibration_factor(map.date.isot, wavelength, method)
+        print(f'Calibration ratio for {wavelength} A: {factor} using map date {map.date.isot} was applied.')
+    calibrated_map = sunpy.map.Map(np.asarray(map.data, dtype=float) * factor, _calibrated_meta(map, method, factor))
     return apply_default_plot_settings(calibrated_map)
+
+
+def calib_del_zanna_2013(map):
+    """Calibrate a map using the Del Zanna 2013 time-dependent sensitivity model."""
+    return _calibrate_with_method(map, 'del_zanna_2013')
 
 
 def calib_del_zanna_2025(map):
     """Calibrate a map using the fit-based Del Zanna 2025 sensitivity model."""
-    match = re.search(r'\d+\.\d+', map.meta['line_id'])
-    wvl_value = float(match.group())
-    calib_ratio = eis_ea(wvl_value) / interpol_eis_ea(map.date.value, wvl_value)
-    print(f'Calibration ratio for {wvl_value} A: {calib_ratio} using map date {map.date.value} was applied.')
-    calibrated_map = sunpy.map.Map(map.data * calib_ratio, _calibrated_meta(map, 'del_zanna_2025'))
-    return apply_default_plot_settings(calibrated_map)
+    return _calibrate_with_method(map, 'del_zanna_2025')
+
+
+def calib_2014(map):
+    """Calibrate a map using the Warren 2014 sensitivity model."""
+    return _calibrate_with_method(map, 'warren_2014')
 
 
 def calibrate_map(map, method='del_zanna_2025'):
     """Apply one of the supported intensity calibration methods to a map.
 
     Supported methods are ``ground``, ``ground_cal``, ``preflight``,
-    ``del_zanna_2013``, ``warren_2014``, and ``del_zanna_2025``.
+    ``del_zanna_2013``, ``warren_2014``, and ``del_zanna_2025``. Intensity
+    uncertainty maps (``int_err`` from :func:`eismaps.make_maps`) are scaled
+    by the same factor.
     """
-    methods = {
-        'ground': lambda current_map: apply_default_plot_settings(sunpy.map.Map(np.array(current_map.data, copy=True), _calibrated_meta(current_map, 'ground'))),
-        'ground_cal': lambda current_map: apply_default_plot_settings(sunpy.map.Map(np.array(current_map.data, copy=True), _calibrated_meta(current_map, 'ground_cal'))),
-        'preflight': lambda current_map: apply_default_plot_settings(sunpy.map.Map(np.array(current_map.data, copy=True), _calibrated_meta(current_map, 'preflight'))),
-        'del_zanna_2013': calib_del_zanna_2013,
-        'warren_2014': calib_2014,
-        'del_zanna_2025': calib_del_zanna_2025,
-    }
-    if method not in methods:
-        raise ValueError(f'Unknown calibration method: {method}. Choose from {sorted(methods)}')
-    return methods[method](map)
-
-def calib_2014(map):
-    """Calibrate a map using the Warren 2014 sensitivity model."""
-    match = re.search(r'\d+\.\d+', map.meta['line_id'])
-    wvl_value = float(match.group())
-    calib_ratio = eis_ea(wvl_value) / eis_ea_nrl(map.date.value, wvl_value)
-    print(f'Calibration ratio for {wvl_value} A: {calib_ratio} using map date {map.date.value} was applied.')
-    new_map = sunpy.map.Map(map.data * calib_ratio, _calibrated_meta(map, 'warren_2014'))
-    return apply_default_plot_settings(new_map)
+    if method not in CALIBRATION_METHODS:
+        raise ValueError(f'Unknown calibration method: {method}. Choose from {sorted(CALIBRATION_METHODS)}')
+    return _calibrate_with_method(map, method)
 
 def eis_ea(input_wave, short=False, long=False):
     """Return the ground-calibration effective area for one or more wavelengths."""
@@ -599,7 +655,7 @@ def eis_ea(input_wave, short=False, long=False):
             ea[i] = 0.0
         else:
             wave, area = eis_effective_area_read(long=long, short=short)
-            ea[i] = np.exp(np.interp(input_wave[i], wave, np.log(area)))
+            ea[i] = np.exp(_spline_interpolate(wave, np.log(area), input_wave[i])[0])
 
     if nWave == 1:
         ea = ea[0]
@@ -653,13 +709,10 @@ def eis_ea_nrl(date, wave, short=False, long=False):
 
 def get_time_tai(date_string):
     """Convert an ISO timestamp into the IDL-style TAI reference used by Warren 2014."""
-    idl_ref_epoch = datetime.datetime(1979, 1, 1)
-    unix_epoch = datetime.datetime(1970, 1, 1)
-    epoch_diff = (idl_ref_epoch - unix_epoch).total_seconds()
-    date_object = datetime.datetime.fromisoformat(date_string)
-    unix_timestamp = date_object.timestamp()
-    idl_timestamp = unix_timestamp - epoch_diff + 3600
-    return idl_timestamp
+    # Seconds since 1979-01-01 UTC. Only differences between two calls are
+    # used, so the epoch does not matter; the date is read as UTC rather than
+    # the machine's local time zone.
+    return float((Time(date_string, scale='utc') - Time('1979-01-01T00:00:00', scale='utc')).to_value('s'))
 
 def eis_get_band(wave):
     """Return the EIS channel label for a wavelength."""

@@ -1,5 +1,6 @@
 """Convert EISPAC fit results into raster maps and plots."""
 
+import copy
 import eispac
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -14,7 +15,8 @@ from eismaps.utils import change_line_format
 from eismaps.utils import apply_default_plot_settings
 
 CC = 2.9979E+5 # speed of light
-VALID_MEASUREMENTS = ['int', 'vel', 'wid', 'ntv', 'chi2']
+UNCERTAINTY_MEASUREMENTS = {'int_err': 'int', 'vel_err': 'vel', 'wid_err': 'wid'}
+VALID_MEASUREMENTS = ['int', 'vel', 'wid', 'ntv', 'chi2', *UNCERTAINTY_MEASUREMENTS]
 
 def map_sd_filter(map,stds=3,log=False):
     """Mask outliers in a map using a standard-deviation threshold.
@@ -220,6 +222,10 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
                 m_map = get_ntv_map(fit_res, component=main_component)
             elif m == 'chi2':
                 m_map = get_chi2_map(fit_res, component=main_component)
+            elif m in UNCERTAINTY_MEASUREMENTS:
+                m_map = get_uncertainty_map(fit_res, UNCERTAINTY_MEASUREMENTS[m], component=main_component)
+            elif m == 'vel':
+                m_map = get_velocity_map(fit_res, component=main_component)
             else:
                 m_map = fit_res.get_map(component=main_component, measurement=m)
 
@@ -227,6 +233,18 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
                 line_id = fit_res.meta.get('line_id', 'unknown')
                 print(f"Skipping {m} map for {file_name} (line {line_id}, component {main_component}): get_map returned None.")
                 continue
+
+            if not np.issubdtype(m_map.data.dtype, np.floating):
+                raise TypeError(f'{m} map is not floating point; cannot mark failed fits.')
+
+            # Pixels without a usable fit of this line are marked as missing
+            # in every measurement (see valid_fit_mask).
+            m_map.data[~valid_fit_mask(fit_res, component=main_component)] = np.nan
+
+            if clip and m in UNCERTAINTY_MEASUREMENTS:
+                raise ValueError('clip=True filters each map independently, so it cannot be combined with uncertainty measurements.')
+            if vel_los_correct and m == 'vel_err':
+                raise ValueError('vel_los_correct=True is not applied to vel_err; request vel_err without it.')
 
             if clip:
                 if m == 'int':
@@ -256,7 +274,10 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
 
                 corrected_data = np.full(m_map.data.shape, np.nan, dtype=float)
                 np.divide(m_map.data, los_factor, out=corrected_data, where=np.abs(los_factor) > 1e-6)
-                m_map = sunpy.map.Map(corrected_data, m_map.meta)
+                # Replace the values in place: rebuilding the map through the
+                # sunpy.map.Map factory makes an eispac EISMap, whose velocity
+                # colour scaling fails on the NaNs set off the disk here.
+                m_map.data[...] = corrected_data
 
             m_map = apply_default_plot_settings(m_map, measurement=m)
 
@@ -282,6 +303,65 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
             maps_by_measurement[m].append(m_map)
 
     return _package_maps(measurement, maps_by_measurement)
+
+def valid_fit_mask(fit_res, component=None):
+    """Return True where a raster pixel has a usable fit of one component.
+
+    EISPAC flags spectra it could not fit with ``status <= 0``, but leaves
+    zeros in their intensity, width and error arrays and about -c in the
+    velocity. A fit can also converge with the line amplitude at its lower
+    limit of zero: no line is detected, the errors come out as zero and the
+    centroid and width stay at their starting values. Both are excluded.
+    """
+    if component is None: component = fit_res.fit['main_component']
+    status = np.asarray(fit_res.fit['status'])
+    peak = np.asarray(fit_res.fit['params'][:, :, 3 * component])
+    return (status > 0) & (peak > 0)
+
+
+def get_velocity(fit_res, component=None):
+    """Return the Doppler velocity of one component in km/s.
+
+    This is EISPAC's velocity, ``c * (centroid - rest) / rest`` with the
+    rest wavelength from the template, minus the median velocity of each
+    raster column (slit position), which EISPAC uses as a rough correction
+    for spacecraft temperature changes. Here the median is taken over the
+    pixels with a usable fit only (see valid_fit_mask); EISPAC's median
+    also counts failed fits, whose velocity is about -c. Columns without a
+    usable fit are NaN.
+    """
+    from astropy import constants as const
+
+    if component is None: component = fit_res.fit['main_component']
+    centroid_index = 1 + 3 * component
+    rest_wave = float(fit_res.parinfo[centroid_index]['value'])
+    centroid = np.asarray(fit_res.fit['params'][:, :, centroid_index], dtype=float)
+    velocity = const.c.to_value('km/s') * (centroid - rest_wave) / rest_wave
+
+    valid = valid_fit_mask(fit_res, component=component)
+    corrected = np.full(velocity.shape, np.nan)
+    for column in range(velocity.shape[1]):
+        good = valid[:, column]
+        if good.any():
+            corrected[:, column] = velocity[:, column] - np.median(velocity[good, column])
+    return corrected
+
+
+def get_velocity_map(fit_res, component=None):
+    """Return a map of :func:`get_velocity`, with EISPAC's velocity metadata.
+
+    EISPAC's EISMap fails on velocity data that contain NaN (as filter_chi2
+    leaves them), so the map is made from a copy of the fit whose velocity
+    array is zeros and the velocities are filled in afterwards.
+    """
+    if component is None: component = fit_res.fit['main_component']
+    placeholder = copy.copy(fit_res)
+    placeholder.fit = dict(fit_res.fit)
+    placeholder.fit['vel'] = np.zeros_like(np.asarray(fit_res.fit['vel'], dtype=float))
+    vel_map = placeholder.get_map(component=component, measurement='vel')
+    vel_map.data[...] = get_velocity(fit_res, component=component)
+    return vel_map
+
 
 def get_ntv_map(fit_res, component=None):
     """Create a non-thermal velocity map from an EISPAC fit result.
@@ -348,6 +428,40 @@ def get_ntv_map(fit_res, component=None):
     map_ntv = sunpy.map.Map(v_nt, map_meta) # create a non-thermal velocity map
 
     return apply_default_plot_settings(map_ntv, measurement='ntv')
+
+def get_uncertainty_map(fit_res, measurement, component=None):
+    """Create a map of the 1-sigma fit uncertainty of ``int``, ``vel`` or ``wid``.
+
+    ``int`` and ``wid`` use EISPAC's fit errors (``err_int``, ``err_width``).
+    For ``vel`` the uncertainty is ``c * sigma_centroid / rest_wavelength``
+    from the fitted centroid error. EISPAC's own ``err_vel`` is not used: it
+    is the centroid's relative error times the velocity, so it vanishes
+    wherever the velocity is close to zero.
+    """
+    if component is None: component = fit_res.fit['main_component']
+
+    if measurement == 'vel':
+        value_map = get_velocity_map(fit_res, component=component)
+    else:
+        value_map = fit_res.get_map(component=component, measurement=measurement)
+    if value_map.uncertainty is None:
+        raise ValueError(f'The {measurement} map has no uncertainty attached.')
+
+    if measurement == 'vel':
+        from astropy import constants as const
+        centroid_index = 1 + 3 * component
+        rest_wave = float(fit_res.parinfo[centroid_index]['value'])
+        centroid_error = np.asarray(fit_res.fit['perror'][:, :, centroid_index], dtype=float)
+        errors = const.c.to_value('km/s') * centroid_error / rest_wave
+    else:
+        errors = np.array(value_map.uncertainty.array, dtype=float)
+
+    map_meta = value_map.meta.copy()
+    map_meta['measrmnt'] = f"{value_map.meta['measrmnt']} uncertainty"
+    # A plain GenericMap: through the sunpy.map.Map factory this would become
+    # an eispac EISMap, whose velocity colour scaling fails on NaN values.
+    error_map = sunpy.map.GenericMap(errors, map_meta)
+    return apply_default_plot_settings(error_map)
 
 # def get_bwa_map(fit_res):
 #     # blue wing asymmetry
