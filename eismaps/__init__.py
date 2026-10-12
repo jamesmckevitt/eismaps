@@ -1,4 +1,4 @@
-"""Public package exports for the function-oriented EISMaps API."""
+"""EISMaps: fitting, raster maps, calibration and full-disk mosaics for Hinode/EIS."""
 
 from eismaps.fit import fit, list_fit_lines
 from eismaps.maps import make_maps

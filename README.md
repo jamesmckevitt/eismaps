@@ -1,11 +1,11 @@
 # EISMaps
 
-EISMaps is a Python package for building science-ready raster and full-disk products from Hinode/EIS observations. It is designed to sit on top of [EISPAC](https://github.com/USNavalResearchLaboratory/eispac) and provide a compact, function-oriented workflow for:
+EISMaps is a Python package for making raster and full-disk maps from Hinode/EIS observations. It works on top of [EISPAC](https://github.com/USNavalResearchLaboratory/eispac) and provides functions for:
 
-- batch fitting EIS spectral lines
-- applying radiometric calibration
-- making intensity, Doppler velocity, and non-thermal velocity SunPy maps
-- assembling full-disk helioprojective or Carrington products
+- fitting EIS spectral lines in batches
+- radiometric calibration
+- SunPy maps of intensity, Doppler velocity and non-thermal velocity
+- full-disk maps in helioprojective or Carrington coordinates
 
 Contact: James McKevitt (jm2@mssl.ucl.ac.uk)
 
@@ -17,11 +17,11 @@ If you use EISMaps in a publication, please cite:
 
 - McKevitt, J., et al. (2026). Coronal non-thermal and Doppler plasma flows driven by photospheric flux in 28 active regions. Publications of the Astronomical Society of Japan. https://doi.org/10.1093/pasj/psag024
 
-You should also acknowledge the software in your acknowledgements section. Recommended text:
+Please also acknowledge the software in your acknowledgements section. Recommended text:
 
 > This work made use of version X.X of the EISMaps Python package (DOI).
 
-The DOI for each version can be found on the [Zenodo release page](https://doi.org/10.5281/zenodo.17640972).
+The DOI of each version is on the [Zenodo release page](https://doi.org/10.5281/zenodo.17640972).
 
 ## Installation
 
@@ -31,11 +31,11 @@ python -m pip install git+https://github.com/jamesmckevitt/eismaps.git
 
 ## Tutorial
 
-A full notebook tutorial on how to assemble full-disk mosaics can be found in [full_disk_tutorial.ipynb](full_disk_tutorial.ipynb).
+The notebook [full_disk_tutorial.ipynb](full_disk_tutorial.ipynb) goes through making full-disk mosaics, from downloading the data to plotting the maps.
 
 ## Public API
 
-The top-level package exports a small function-oriented interface:
+The package exports these functions:
 
 ```python
 from eismaps import (
@@ -50,7 +50,7 @@ from eismaps import (
 
 ### Fitting
 
-Use `list_fit_lines()` to inspect which template lines are available in one or more rasters:
+`list_fit_lines()` lists the lines covered by the EISPAC templates that match one or more rasters:
 
 ```python
 from eismaps import list_fit_lines
@@ -59,7 +59,7 @@ lines = list_fit_lines(['eis_20130113_074850.data.h5'])
 print(lines)
 ```
 
-Use `fit()` to run EISPAC fits on one or more rasters:
+`fit()` runs EISPAC fits on one or more rasters:
 
 ```python
 from eismaps import fit
@@ -72,17 +72,18 @@ fit_results = fit(
 )
 ```
 
-Key options:
+Main options:
 
-- `lines_to_fit='all'` fits every available template line
+- `lines_to_fit='all'` fits every line that has a template
 - `ncpu='max'` uses all available CPU cores
-- `filter_chi2=<float>` masks poor fits before saving
-- `output_dir='...'` writes `.fit.h5` products while still returning in-memory fit objects
+- `filter_chi2=<float>` sets fitted values to NaN where chi-squared is above this value, before saving
+- `output_dir='...'` writes `.fit.h5` files, and the fit results are still returned in memory
+- `skip_done=True` (the default) loads existing `.fit.h5` files from `output_dir` instead of fitting again
 - `lock_to_window=True` keeps one fit result per spectral window
 
 ### Raster Maps
 
-Use `make_maps()` to convert fit results into SunPy map products:
+`make_maps()` turns fit results into SunPy maps:
 
 ```python
 from eismaps import make_maps
@@ -97,23 +98,23 @@ map_products = make_maps(
 
 Behaviour:
 
-- a single requested measurement returns a SunPy map or `MapSequence`
-- multiple requested measurements return a dictionary keyed by measurement name
-- supported measurements are `int`, `vel`, `wid`, `ntv`, `chi2`, and the fit uncertainties `int_err`, `vel_err` and `wid_err`
+- one measurement gives a SunPy map, or a `MapSequence` for several rasters
+- several measurements give a dictionary keyed by measurement name
+- the measurements are `int`, `vel`, `wid`, `ntv`, `chi2`, and the fit uncertainties `int_err`, `vel_err` and `wid_err`
 - pixels without a usable fit are NaN in every measurement: spectra EISPAC could not fit, fits whose line amplitude is zero or has no error, and fits with no degrees of freedom (infinite chi-squared)
-- `vel` and `vel_err` are also NaN where the fitted centroid is not a measurement, and `wid`, `wid_err` and `ntv` where the width is not: the parameter ended the fit on one of its template limits, or MPFIT gave it a zero error (it does so for parameters on a limit, for parameters fixed or tied in the template, and when it cannot compute the errors)
+- `vel` and `vel_err` are also NaN where the fitted centroid is not a measurement, and `wid`, `wid_err` and `ntv` where the width is not. A parameter is not a measurement if it ended the fit on one of its template limits, or if MPFIT gave it a zero error. MPFIT does this for parameters on a limit, for parameters fixed or tied in the template, and when it cannot compute the errors.
 - `vel` is EISPAC's Doppler velocity minus the median of each raster column, with the median taken over measured centroids only
 - `int_err` is EISPAC's intensity error, which has no width term where the width error is zero (for example a width on a limit)
 
 Useful options:
 
-- `clip=True` applies outlier clipping before saving to catch bad data
-- `output_dir='...'` writes FITS map products
-- `vel_los_correct=True` applies a line-of-sight correction to velocity maps (assuming the velocity is radial)
+- `clip=True` sets outliers to NaN in the `int`, `vel`, `wid` and `ntv` maps, whether or not they are saved (`chi2` is not clipped, and the uncertainty measurements cannot be clipped)
+- `output_dir='...'` writes the maps as FITS files
+- `vel_los_correct=True` applies a line-of-sight correction to velocity maps, assuming the velocity is radial
 
 ### Calibration
 
-`apply_calibration()` converts gives an intensity map (or a list / dict of maps) in calibrated radiance, using one of several published methods:
+`apply_calibration()` converts intensity maps from EISPAC's pre-flight calibration to one of several published calibrations. It takes a map, a list of maps or a dict of maps:
 
 ```python
 from eismaps import apply_calibration
@@ -125,11 +126,11 @@ calibrated = apply_calibration(
 )
 ```
 
-Supported `method=` values are `ground`, `ground_cal`, `preflight`, `warren_2014`, `del_zanna_2013`, and `del_zanna_2025`. `int_err` maps can be calibrated in the same way. The factor applied is stored in each calibrated map's `calfact` keyword, and `eismaps.calibration.calibration_factor(date, wavelength, method)` returns it directly.
+Supported `method=` values are `ground`, `ground_cal`, `preflight`, `warren_2014`, `del_zanna_2013`, and `del_zanna_2025`. The first three keep EISPAC's pre-flight values (a factor of 1). `int_err` maps can be calibrated in the same way. The factor applied is stored in each calibrated map's `calfact` keyword, and `eismaps.calibration.calibration_factor(date, wavelength, method)` returns it directly.
 
 ### Full-Disk Assembly
 
-Use `make_helioprojective_map()` to combine raster maps into a full-disk helioprojective product:
+`make_helioprojective_map()` combines raster maps into a full-disk helioprojective map:
 
 ```python
 from eismaps import make_helioprojective_map
@@ -145,16 +146,16 @@ fd_map, overlap_map = make_helioprojective_map(
 )
 ```
 
-Important options:
+Main options:
 
 - `overlap='mean'` averages overlapping rasters
-- `overlap='max'` keeps the largest absolute value in overlaps
-- `apply_rotation=True` applies differential rotation before reprojection
+- `overlap='max'` keeps the value of largest magnitude in overlaps
+- `apply_rotation=True` differentially rotates the rasters to the time of the reference map before combining them
 - `preserve_limb=True` keeps off-limb signal during reprojection
 - `algorithm='exact'`, `'interpolation'`, or `'adaptive'` selects the reprojection method
-- `remove_off_disk='before'` or `'after'` controls whether off-disk pixels are masked before or after reprojection
+- `remove_off_disk='before'` or `'after'` sets off-disk pixels to NaN in each raster before combining, or in the combined map
 
-To carry uncertainties and other per-raster quantities through the mosaic, pass them alongside the values:
+To carry uncertainties and other per-raster quantities through the mosaic, pass them with the values:
 
 ```python
 fd_int, overlap_map, extras = make_helioprojective_map(
@@ -168,16 +169,16 @@ fd_int_err = extras['uncertainty']
 fd_chi2 = extras['chi2']
 ```
 
-- `uncertainty` and `companions` need `algorithm='exact'`; the values are then identical to those without them
+- `uncertainty` and `companions` need `algorithm='exact'`, and the values are then the same as without them
 - with `overlap='max'`, each pixel's uncertainty and companions come from the raster that supplied its value; with `overlap='mean'` the uncertainty is that of the mean
 - the uncertainty of a resampled pixel accounts for the EIS pixels it averages, assuming their errors are independent
-- by default a NaN raster pixel makes every output pixel it overlaps NaN, as in `reproject_exact`; `skip_nan=True` leaves NaN pixels out, so each output pixel averages the valid pixels it overlaps (needs `algorithm='exact'`)
+- by default a NaN raster pixel makes every output pixel it overlaps NaN, as in `reproject_exact`. `skip_nan=True` leaves NaN pixels out, so each output pixel averages the valid pixels it overlaps (needs `algorithm='exact'`).
 
-Use `make_carrington_map()` when you want a Carrington projection instead of a helioprojective full-disk map.
+`make_carrington_map()` makes a Carrington map instead of a helioprojective one.
 
 ## Typical API Flow
 
-The public functions are intended to chain:
+The functions chain together:
 
 ```python
 from eismaps import apply_calibration, fit, make_helioprojective_map, make_maps
@@ -190,7 +191,7 @@ fd_map, overlap_map = make_helioprojective_map(calibrated_intensity, overlap='me
 
 ## Developer note: Calibration Assets
 
-The calibration helpers expect reference assets in `eismaps/calibration_data/` (plus `eismaps/eis_width2velocity.dat` at the package root for the non-thermal velocity helper). These files are mirrored from a local SolarSoft (SSW) checkout and the originals live in the `hinode/eis/response` and `hinode/eis/idl/atest/hwarren` trees there.
+The calibration code reads files in `eismaps/calibration_data/`, and the non-thermal velocity code reads `eismaps/eis_width2velocity.dat`. They are copies of files in a local SolarSoft (SSW) tree, under `hinode/eis/response` and `hinode/eis/idl/atest/hwarren`.
 
 ### What is in the package
 
@@ -199,15 +200,15 @@ The calibration helpers expect reference assets in `eismaps/calibration_data/` (
 | `fit_eis_ea_YYYY-MM-DD.sav` | `hinode/eis/idl/atest/hwarren/calibration/new/fit_eis_ea_*.sav` (latest) | `del_zanna_2025` time-interpolated effective area |
 | `EIS_EffArea_A.004` | `hinode/eis/response/EIS_EffArea_A.004` (exact) | `del_zanna_2013` (long-wave pinned ground area) |
 | `EIS_EffArea_B.004` | `hinode/eis/response/EIS_EffArea_B.004` (exact) | `del_zanna_2013` (short-wave pinned ground area) |
-| `EIS_EffArea_A.NNN`, `EIS_EffArea_B.NNN` | `hinode/eis/response/EIS_EffArea_*.*` (latest) | `ground_cal` and Del Zanna long-term decay model |
+| `EIS_EffArea_A.NNN`, `EIS_EffArea_B.NNN` | `hinode/eis/response/EIS_EffArea_*.*` (latest) | `warren_2014` and `del_zanna_2025` (pre-flight area in the calibration factor); `del_zanna_2013` if the `.004` files are missing |
 | `eis_width2velocity.dat` (package root) | `hinode/eis/idl/atest/hwarren/eis_width2velocity.dat` | Non-thermal velocity helper (`eismaps.utils.width2velocity`) |
 | `sources.json` | written by the sync helper | Provenance manifest of the copied files |
 
-The Warren 2014 NRL coefficients and the Del Zanna 2013 spline points are not stored as files. Both are inlined directly in `eismaps/calibration.py` (as `WARREN_2014_*` and `GDZ_2013_*` constants), exactly the way the SSW IDL routines `eis_ea_nrl.pro` and `eis_ltds.pro` embed them in source. Their published values are stable - the Warren 2014 NRL set is at v1.3 (Feb 2016) and the GDZ 2013 set has not been revised.
+The Warren 2014 NRL coefficients and the Del Zanna 2013 spline points are not files: they are constants in `eismaps/calibration.py` (`WARREN_2014_*` and `GDZ_2013_*`). SSW's `eis_ltds.pro` also holds the Del Zanna 2013 points in its source, while `eis_ea_nrl.pro` reads the Warren 2014 coefficients from `nrl_ea_coeff_v1.3.genx`. Both sets are stable: the Warren 2014 NRL set is at v1.3 (the coefficients of the paper, dated March 2014 and in SSW since February 2016) and the GDZ 2013 set has not been revised.
 
 ### Refreshing the assets from SolarSoft
 
-If you keep SSW locally (`$SSW`) and want to update the bundled calibration files, run the sync entry point:
+To update the files from a local SSW tree (`$SSW`), run:
 
 ```bash
 eismaps-sync-calibration --ssw-root "$SSW"
@@ -222,19 +223,19 @@ manifest = sync_solarsoft_calibration_data(ssw_root='/path/to/ssw')
 print(manifest['copied'])
 ```
 
-This will:
+This:
 
-1. Copy the latest `fit_eis_ea_*.sav` into `calibration_data/`.
-2. Copy the latest `EIS_EffArea_A.*` and `EIS_EffArea_B.*` text tables into `calibration_data/`.
-3. Pin and copy `EIS_EffArea_A.004` and `EIS_EffArea_B.004` exactly (these are the ground areas the Del Zanna 2013 model is defined against).
-4. Copy `eis_width2velocity.dat` into the package root next to `__init__.py`.
-5. Write a manifest at `calibration_data/sources.json` recording source paths, destination paths, the SSW root used, and the UTC sync timestamp.
+1. Copies the latest `fit_eis_ea_*.sav` into `calibration_data/`.
+2. Copies the latest `EIS_EffArea_A.*` and `EIS_EffArea_B.*` text tables into `calibration_data/`.
+3. Copies `EIS_EffArea_A.004` and `EIS_EffArea_B.004` by name, as the Del Zanna 2013 model is defined against these versions.
+4. Copies `eis_width2velocity.dat` into the package root, next to `__init__.py`.
+5. Writes a manifest, `calibration_data/sources.json`, with the source and destination paths, the SSW root and the UTC time of the sync.
 
-The Warren 2014 `.sav` cache is intentionally left alone by the sync (see note above).
+The Warren 2014 coefficients are not copied, as they are constants in the source (see above).
 
 ## Full-Disk Scan Dataset
 
-The table below lists the time coverage of each full-disk scan in the dataset used in Full-Disk Spectroscopy of the Solar Corona Across a Solar Cycle with Hinode/EIS (McKevitt et al., 2026). Start and end times are taken from the filename timestamps of the first and last EIS raster file in each scan directory, and are in UTC.
+The table below gives the time coverage of each full-disk scan in the dataset of "Full-Disk Spectroscopy of the Solar Corona Across a Solar Cycle with Hinode/EIS" (McKevitt et al., 2026). The start and end times are the filename timestamps of the first and last EIS raster file in each scan directory, in UTC.
 
 | Disk | Start (UTC) | End (UTC) |
 |------|-------------|-----------|
