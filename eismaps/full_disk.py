@@ -582,7 +582,7 @@ def make_helioprojective_map(
           conservation
     remove_off_disk : bool or {'before', 'after'}, default=False
         When off-disk pixels are set to NaN:
-        - False: never
+        - False: not by this option (but see `preserve_limb`)
         - True or 'before': in each map, before combining
         - 'after': in the combined map
     apply_los_correction : bool, default=False

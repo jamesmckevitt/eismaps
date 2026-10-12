@@ -149,7 +149,7 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
     clip : bool, default=False
         Set outliers to NaN with :func:`map_sd_filter`: beyond 6 standard
         deviations for `int` (in log10) and `vel`, and 3 for `wid` and `ntv`.
-        Not allowed with the uncertainty measurements.
+        `chi2` is not clipped. Not allowed with the uncertainty measurements.
     save_fit : bool, default=True
         Save the maps as FITS files.
     save_plot : bool, default=False
@@ -625,7 +625,9 @@ def make_maps(
     ncpu : int or str, default='max'
         Number of parallel workers. ``'max'`` uses all available CPUs.
     clip : bool, default=False
-        Set outliers to NaN in each map (see :func:`batch`).
+        Set outliers to NaN in the `int`, `vel`, `wid` and `ntv` maps (see
+        :func:`batch`). `chi2` is not clipped, and the uncertainty
+        measurements cannot be clipped.
     save : bool or None, default=None
         Save the maps as FITS files. Defaults to True when `output_dir` is
         given, False otherwise.

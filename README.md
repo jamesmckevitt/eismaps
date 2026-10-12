@@ -108,7 +108,7 @@ Behaviour:
 
 Useful options:
 
-- `clip=True` sets outliers to NaN before saving
+- `clip=True` sets outliers to NaN in the `int`, `vel`, `wid` and `ntv` maps, whether or not they are saved (`chi2` is not clipped, and the uncertainty measurements cannot be clipped)
 - `output_dir='...'` writes the maps as FITS files
 - `vel_los_correct=True` applies a line-of-sight correction to velocity maps, assuming the velocity is radial
 
