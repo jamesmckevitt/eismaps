@@ -9,6 +9,7 @@ Carrington map.
 
 import contextlib
 import copy
+import numbers
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
@@ -846,15 +847,65 @@ def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, a
     """
     Make a Carrington full-disk map from map files or in-memory maps.
 
+    The output is a cylindrical equal-area (CEA) map of Carrington longitude
+    and latitude covering the whole Sun.
+
     Parameters
     ----------
+    map_files : List[object]
+        One map, a map sequence, or a collection of map file paths or
+        ``sunpy.map.Map`` objects.
+    save_dir : str
+        Directory for the saved FITS file and plot, also checked by
+        `skip_done`.
+    wavelength : str
+        Line label used in the output file name, e.g. 'fe_12_195_119'.
+    measurement : str
+        Measurement name used in the output file name and to choose the plot
+        colour map, e.g. 'int' or 'vel'.
+    overlap : {'max', 'mean', 'nan'} or float
+        How overlapping rasters are combined:
+        - 'max': the value of largest magnitude (for Doppler velocities)
+        - 'mean': the mean
+        - 'nan' or a number: pixels covered more than once are set to NaN or
+          to that number
+    apply_rotation : bool, default=True
+        Place each raster at the Carrington coordinates of its own
+        observation time. If False, every raster is placed as if observed at
+        the reference time.
+    deg_per_pix : float, default=0.1
+        Pixel size in degrees.
+    save_fit : bool, default=False
+        Save the map as a FITS file.
+    save_plot : bool, default=False
+        Save a plot of the map.
+    plot_ext : str, default='png'
+        File extension, and so format, of the plot.
+    plot_dpi : int, default=300
+        Resolution of the plot.
+    skip_done : bool, default=True
+        Return None without making the map if the requested outputs already
+        exist.
     reference_map : {'first', 'last'}, default='first'
         Input map that sets the reference observation time and observer
         metadata of the Carrington WCS: the first or the last.
+
+    Returns
+    -------
+    sunpy.map.Map or None
+        The Carrington map, or None if it was skipped or the reference map
+        could not be loaded. Its DATE-OBS is that of the reference map.
     """
 
     if reference_map not in ('first', 'last'):
         raise ValueError("reference_map must be 'first' or 'last'.")
+    if isinstance(overlap, str):
+        if overlap == 'nan':
+            overlap = np.nan
+        elif overlap not in ('max', 'mean'):
+            raise ValueError("overlap must be 'max', 'mean', 'nan' or a number.")
+    elif not isinstance(overlap, numbers.Real):
+        raise ValueError("overlap must be 'max', 'mean', 'nan' or a number.")
 
     map_files = _normalise_map_collection(map_files)
 
@@ -922,8 +973,7 @@ def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, a
     }
 
     fd_data = np.full((lat_pixels, lon_pixels), np.nan)
-    fd_map = sunpy.map.Map(fd_data, fd_header)
-
+    combined_data = np.full((lat_pixels, lon_pixels), np.nan)
     overlap_mask = np.zeros((lat_pixels, lon_pixels))
 
     for map_file in map_files:
@@ -934,27 +984,28 @@ def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, a
             print(f"Error loading map {map_file}: {e}. Skipping.")
             continue
 
-        # Set the time of the target map (not a copy) to the raster's time.
-        fd_map_temp = fd_map
+        # With apply_rotation, the raster goes onto the Carrington grid of its
+        # own observation time.
+        target_header = dict(fd_header)
         if apply_rotation:
-            fd_map_temp.meta['date_obs'] = map.meta['date_obs']
-
-        target_wcs = fd_map_temp.wcs
+            target_header['date_obs'] = map.meta['date_obs']
+        target_wcs = sunpy.map.Map(fd_data, target_header).wcs
 
         map_carrington = map.reproject_to(target_wcs)
 
         if overlap == 'max':
-            combined_data = np.where(np.isnan(fd_map.data), map_carrington.data, np.nanmax([fd_map.data, map_carrington.data], axis=0))
+            combined_data = _combine_data_max_abs(combined_data, map_carrington.data)
         elif overlap == 'mean':
-            combined_data = np.where(np.isnan(fd_map.data), map_carrington.data, (fd_map.data + map_carrington.data))
-            overlap_mask = np.where(np.isnan(fd_map.data), overlap_mask + 1, overlap_mask)
-        elif overlap == 'nan':
-            combined_data = np.where(np.isnan(fd_map.data), map_carrington.data, np.nan)
+            combined_data = _combine_data_mean(combined_data, map_carrington.data)
+        else:
+            combined_data = _combine_data_with_fill(combined_data, map_carrington.data, overlap, covered=overlap_mask > 0)
 
-        fd_map = sunpy.map.Map(combined_data, fd_map.meta)
+        overlap_mask = _update_overlap_mask(overlap_mask, map_carrington.data)
 
     if overlap == 'mean':
-        fd_map.data = fd_map.data / overlap_mask
+        combined_data = np.where(overlap_mask > 0, combined_data / overlap_mask, np.nan)
+
+    fd_map = sunpy.map.Map(combined_data, fd_header)
 
     if save_fit:
 
