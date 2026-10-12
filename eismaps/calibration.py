@@ -1,9 +1,8 @@
-"""Calibration helpers for Hinode/EIS rasters.
+"""Intensity calibration of Hinode/EIS maps.
 
-The module keeps the Python calibration logic close to the SolarSoft EIS
-reference implementation.  Raw calibration assets can be synced from an SSW
-tree into ``eismaps/calibration_data`` with
-``eismaps-sync-calibration``.
+The methods follow the SolarSoft (SSW) EIS routines closely. The calibration
+files are copied from an SSW tree into `eismaps/calibration_data` with the
+`eismaps-sync-calibration` command.
 """
 
 import argparse
@@ -122,11 +121,9 @@ GDZ_2013_REFERENCE_DATE = '2006-09-22T21:36:00.000'
 GDZ_2013_LAST_DATE = '2012-09-14T00:00:00.000'
 GDZ_2013_LW_COEFFICIENTS = np.array([1.0326230, -5.2495791e-09, 1.2055185e-17], dtype=float)
 
-# Warren 2014 NRL coefficient set, version 1.3 (Mar 2014). These constants are
-# the entirety of the irreducible data in nrl_ea_coeff_v1.3.genx. They live in
-# the source the same way the GDZ 2013 spline points above live here and the
-# way the SSW IDL routine eis_ea_nrl.pro embeds them into a common block.
-# Reference: Warren, Ugarte-Urra & Landi 2014, ApJS 213, 11.
+# Warren 2014 NRL coefficients, version 1.3 (Mar 2014): the model coefficients
+# in nrl_ea_coeff_v1.3.genx, which SSW's eis_ea_nrl.pro reads into a common
+# block. Reference: Warren, Ugarte-Urra & Landi 2014, ApJS 213, 11.
 WARREN_2014_VERSION = '1.3'
 WARREN_2014_REFERENCE_DATE = '2006-09-22T00:00:00.000'
 WARREN_2014_WAVE_KNOTS_SW = np.array(
@@ -150,13 +147,13 @@ WARREN_2014_TAU_LW = np.array([
 
 
 def _latest_matching_file(directory, pattern):
-    """Return the lexicographically latest file matching ``pattern`` in ``directory``."""
+    """Return the lexicographically latest file matching `pattern` in `directory`, or None."""
     matches = sorted(Path(directory).glob(pattern))
     return matches[-1] if matches else None
 
 
 def _resolve_fit_ea_file(ea_file=None):
-    """Return the fit-based Del Zanna calibration file to use."""
+    """Return `ea_file`, or else the latest packaged fit_eis_ea_*.sav file."""
     if ea_file is not None:
         return Path(ea_file)
 
@@ -170,7 +167,7 @@ def _resolve_fit_ea_file(ea_file=None):
 
 
 def _resolve_response_file(short=False, long=False):
-    """Return the packaged pre-flight effective-area file for one channel."""
+    """Return the latest packaged pre-flight effective-area file for one channel."""
     if short == long:
         raise ValueError('Exactly one of short=True or long=True must be set.')
 
@@ -187,7 +184,11 @@ def _resolve_response_file(short=False, long=False):
 
 
 def _resolve_del_zanna_2013_response_file(short=False, long=False):
-    """Return the response file used by the Del Zanna 2013 degradation model."""
+    """Return the effective-area file for the Del Zanna 2013 degradation model.
+
+    EIS_EffArea_B.004 (short) or EIS_EffArea_A.004 (long), or the latest file
+    of that channel if it is missing.
+    """
     if short == long:
         raise ValueError('Exactly one of short=True or long=True must be set.')
 
@@ -198,12 +199,11 @@ def _resolve_del_zanna_2013_response_file(short=False, long=False):
 
 
 def _load_warren_2014_coefficients():
-    """Return the Warren 2014 NRL coefficient set as a plain dict.
+    """Return the Warren 2014 NRL coefficients as a dict.
 
-    The constants are inlined at module scope (see WARREN_2014_*). This
-    helper exists so the calibration code path matches the IDL
-    ``eis_ea_nrl.pro`` common-block layout without needing an external
-    ``.sav`` cache. Reference: Warren, Ugarte-Urra & Landi 2014, ApJS 213, 11.
+    The values are the WARREN_2014_* constants, laid out like the common block
+    of SSW's eis_ea_nrl.pro. Reference: Warren, Ugarte-Urra & Landi 2014,
+    ApJS 213, 11.
     """
     return {
         'version': WARREN_2014_VERSION,
@@ -218,14 +218,14 @@ def _load_warren_2014_coefficients():
 
 
 def _read_effective_area_table(file_path):
-    """Read a pre-flight effective-area table from a SolarSoft text file."""
+    """Read wavelengths and effective areas from a SolarSoft EIS_EffArea text file."""
     resolved_file = Path(file_path)
     wave, area = np.loadtxt(resolved_file, comments='#', unpack=True)
     return np.asarray(wave, dtype=float), np.asarray(area, dtype=float)
 
 
 def _resolve_ssw_root(ssw_root=None):
-    """Resolve and validate the local SolarSoft root directory."""
+    """Return the SolarSoft root, from `ssw_root` or the SSW environment variable."""
     if ssw_root is not None:
         resolved_root = Path(ssw_root).expanduser().resolve()
     else:
@@ -247,8 +247,9 @@ def _spline_interpolate(x_values, y_values, target_values):
     eis_ltds.pro) all interpolate this way. For each target, IDL takes the
     four tabulated points around it (starting one below the interval that
     contains it, kept inside the table) and evaluates the natural cubic
-    spline through those four points. Targets outside the table use the four
-    points at that end. ``x_values`` must be increasing.
+    spline through them. Targets outside the table use the four points at
+    that end. Tables of fewer than four points are interpolated linearly
+    with ``np.interp``. `x_values` must be increasing.
     """
     from scipy.interpolate import CubicSpline
 
@@ -271,11 +272,13 @@ def _spline_interpolate(x_values, y_values, target_values):
 
 
 def _calibrated_meta(map_obj, method, factor=None):
-    """Return updated metadata for a calibrated intensity (or intensity uncertainty) map.
+    """Return the metadata of a calibrated intensity or intensity uncertainty map.
 
-    The measurement label becomes ``Intensity (<method>)`` or
-    ``Intensity uncertainty (<method>)``, and the method and the factor that
-    was applied are recorded in ``calib`` and ``calfact``.
+    The measurement becomes ``Intensity (<label>)`` or
+    ``Intensity uncertainty (<label>)``, with the method's label from
+    CALIBRATION_LABELS (e.g. 'Del Zanna 2025'). The method is recorded in
+    `calib` and the factor, if given, in `calfact`. An empty `bunit` is set
+    to 'erg / (s sr cm2)'.
     """
     calibration_label = CALIBRATION_LABELS.get(method, method.replace('_', ' ').title())
     base_measurement = str(map_obj.meta.get('measrmnt', '')).strip()
@@ -298,31 +301,38 @@ def _calibrated_meta(map_obj, method, factor=None):
 
 
 def sync_solarsoft_calibration_data(ssw_root=None, destination_dir=CALIBRATION_DATA_PATH, overwrite=True):
-    """Copy the SolarSoft EIS calibration assets used by this package.
+    """Copy the SolarSoft EIS calibration files used by this package.
+
+    The latest fit_eis_ea_*.sav, EIS_EffArea_A.* and EIS_EffArea_B.* files,
+    and EIS_EffArea_A.004 and EIS_EffArea_B.004 by name, go to
+    `destination_dir`. eis_width2velocity.dat goes to the package directory,
+    and the manifest is written to `calibration_data/sources.json` in the
+    package. A file that cannot be found raises FileNotFoundError.
 
     Parameters
     ----------
     ssw_root : str or pathlib.Path, optional
-        Root of the local SolarSoft checkout. Defaults to the ``SSW``
-        environment variable.
+        Root of the local SolarSoft tree. Defaults to the `SSW` environment
+        variable.
     destination_dir : str or pathlib.Path, optional
-        Directory that will receive the copied calibration assets.
+        Directory for the copied files. Defaults to the package's
+        `calibration_data` directory.
     overwrite : bool, default=True
-        Whether to replace existing files in ``destination_dir``.
+        Replace existing files.
 
     Returns
     -------
     dict
-        Manifest describing the copied files.
+        Manifest of the copied files.
     """
     resolved_root = _resolve_ssw_root(ssw_root)
     destination_dir = Path(destination_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
 
-    # Each entry: (source_directory, glob_pattern, destination_directory, mode)
-    # mode='latest' copies the lexicographically latest match; mode='exact'
-    # copies that exact filename so callers that depend on a specific version
-    # (e.g. Del Zanna 2013 expects EIS_EffArea_B.004) get a guaranteed asset.
+    # Each entry: (source_directory, glob_pattern, destination_directory, mode).
+    # mode='latest' copies the lexicographically latest match, and mode='exact'
+    # copies the named file, for code that needs a specific version (e.g. Del
+    # Zanna 2013 needs EIS_EffArea_B.004).
     source_specs = {
         'fit_ea':                          (resolved_root / SSW_FIT_EA_DIR,       FIT_EA_PATTERN,              destination_dir, 'latest'),
         'preflight_long':                  (resolved_root / SSW_RESPONSE_DIR,     RAW_PREFLIGHT_LONG_PATTERN,  destination_dir, 'latest'),
@@ -369,7 +379,7 @@ def sync_solarsoft_calibration_data(ssw_root=None, destination_dir=CALIBRATION_D
 
 
 def sync_solarsoft_calibration_data_cli():
-    """CLI wrapper for copying SolarSoft calibration assets into the package."""
+    """Command-line entry point (eismaps-sync-calibration) of sync_solarsoft_calibration_data."""
     parser = argparse.ArgumentParser(description='Sync EIS calibration assets from SolarSoft into eismaps.')
     parser.add_argument('--ssw-root', help='Path to the local SolarSoft checkout. Defaults to the SSW environment variable.')
     parser.add_argument('--destination', default=str(CALIBRATION_DATA_PATH), help='Destination directory for copied assets.')
@@ -384,7 +394,11 @@ def sync_solarsoft_calibration_data_cli():
     print(json.dumps(manifest, indent=2))
 
 def anytim2tai(time_str):
-    """Convert a compact ISO-like timestamp string into TAI seconds."""
+    """Seconds since 1958-01-01 TAI for a timestamp, as SSW's anytim2tai gives.
+
+    Leap seconds are counted and fractional seconds are dropped. The date and
+    time must be separated by 'T' or a space.
+    """
     time_str = re.sub(r'[^\w\s.]', '', time_str)
     time_str, _, fractional_part = time_str.partition('.')
     if 'T' in time_str:
@@ -393,16 +407,24 @@ def anytim2tai(time_str):
     else:
         time_str = re.sub(r'[^\w\s]', '', time_str)
     dt = datetime.datetime.strptime(time_str, '%Y%m%d %H%M%S')
-    # Seconds since 1958-01-01 TAI, counting the leap seconds in between as
-    # SSW's anytim2tai does.
+    # Leap seconds are counted, as by SSW's anytim2tai.
     return float((Time(dt, scale='utc').tai - Time('1958-01-01T00:00:00', scale='tai')).to_value('s'))
 
 def interpol_eis_ea(date, wavelength, short=False, long=False, radcal=False, ea_file=None, quiet=False):
-    """Interpolate Del Zanna fit-based effective areas for one observation date."""
+    """Del Zanna fit-based effective areas for one observation date.
+
+    The areas in the latest fit_eis_ea_*.sav file (or `ea_file`) are
+    interpolated linearly in time, held at the first or last calibrated date
+    outside that range, and spline-interpolated to `wavelength` in Angstrom.
+    All wavelengths must be in one band: short (165-213) or long (245-292).
+    With `short` or `long`, the areas of that channel at the file's
+    wavelengths are returned. With `radcal`, the factors converting DN/s to
+    erg/(sr cm^2 s) are returned instead; exposure time and slit size may
+    still need to be applied.
+    """
     if np.size(date) != 1:
         raise ValueError('ERROR: please input a single date')
-    
-    # Ensure wavelength is always treated as an array
+
     wavelength = np.atleast_1d(wavelength)
     
     in_tai = anytim2tai(date)
@@ -481,10 +503,15 @@ def interpol_eis_ea(date, wavelength, short=False, long=False, radcal=False, ea_
 def eis_ltds(date, wavelengths, quiet=False, undecay=False):
     """Return Del Zanna 2013 correction factors for ground-calibrated intensities.
 
+    Wavelengths not strictly between 165 and 212 or 245 and 292 Angstrom get
+    1, and ValueError is raised if all of them are outside. Dates before
+    2006-09-22 21:36 give 1. After 2012-09-14 the long-wave degradation is
+    held at its value on that date.
+
     Parameters
     ----------
     date : str
-        Observation timestamp.
+        Observation time.
     wavelengths : float or array-like
         EIS wavelengths in Angstrom.
     quiet : bool, default=False
@@ -495,7 +522,7 @@ def eis_ltds(date, wavelengths, quiet=False, undecay=False):
     Returns
     -------
     float or numpy.ndarray
-        Multiplicative correction factors for the supplied wavelengths.
+        Multiplicative correction factors at `wavelengths`.
     """
     wavelength_array = np.atleast_1d(np.asarray(wavelengths, dtype=float))
     short_mask = (wavelength_array > 165.0) & (wavelength_array < 212.0)
@@ -564,12 +591,12 @@ CALIBRATION_METHODS = ('ground', 'ground_cal', 'preflight', 'del_zanna_2013', 'w
 
 
 def calibration_factor(date, wavelength, method='del_zanna_2025'):
-    """Return the factor that converts a pre-flight EISPAC intensity to ``method``.
+    """Return the factor that converts a pre-flight EISPAC intensity to `method`.
 
     EISPAC intensities use the pre-flight (ground) radiometric calibration.
     Multiplying them, or their uncertainties, by this factor gives the
-    intensity in the chosen calibration. ``ground``, ``ground_cal`` and
-    ``preflight`` return 1.
+    intensity in the chosen calibration. 'ground', 'ground_cal' and
+    'preflight' return 1, and an unknown method raises ValueError.
 
     Parameters
     ----------
@@ -578,7 +605,7 @@ def calibration_factor(date, wavelength, method='del_zanna_2025'):
     wavelength : float
         Rest wavelength of the line in Angstrom.
     method : str, default='del_zanna_2025'
-        One of ``CALIBRATION_METHODS``.
+        One of CALIBRATION_METHODS.
     """
     if method in ('ground', 'ground_cal', 'preflight'):
         return 1.0
@@ -604,34 +631,39 @@ def _calibrate_with_method(map, method):
 
 
 def calib_del_zanna_2013(map):
-    """Calibrate a map using the Del Zanna 2013 time-dependent sensitivity model."""
+    """Calibrate a map with the Del Zanna 2013 time-dependent sensitivity model."""
     return _calibrate_with_method(map, 'del_zanna_2013')
 
 
 def calib_del_zanna_2025(map):
-    """Calibrate a map using the fit-based Del Zanna 2025 sensitivity model."""
+    """Calibrate a map with the fit-based Del Zanna 2025 sensitivity model."""
     return _calibrate_with_method(map, 'del_zanna_2025')
 
 
 def calib_2014(map):
-    """Calibrate a map using the Warren 2014 sensitivity model."""
+    """Calibrate a map with the Warren 2014 sensitivity model."""
     return _calibrate_with_method(map, 'warren_2014')
 
 
 def calibrate_map(map, method='del_zanna_2025'):
-    """Apply one of the supported intensity calibration methods to a map.
+    """Calibrate an intensity map with one of the supported methods.
 
-    Supported methods are ``ground``, ``ground_cal``, ``preflight``,
-    ``del_zanna_2013``, ``warren_2014``, and ``del_zanna_2025``. Intensity
-    uncertainty maps (``int_err`` from :func:`eismaps.make_maps`) are scaled
-    by the same factor.
+    The methods are 'ground', 'ground_cal', 'preflight', 'del_zanna_2013',
+    'warren_2014' and 'del_zanna_2025'. Intensity uncertainty maps (`int_err`
+    from :func:`eismaps.make_maps`) are scaled by the same factor.
     """
     if method not in CALIBRATION_METHODS:
         raise ValueError(f'Unknown calibration method: {method}. Choose from {sorted(CALIBRATION_METHODS)}')
     return _calibrate_with_method(map, method)
 
 def eis_ea(input_wave, short=False, long=False):
-    """Return the ground-calibration effective area for one or more wavelengths."""
+    """Return the pre-flight (ground) effective area at one or more wavelengths.
+
+    The area is interpolated from the latest EIS_EffArea file of each band as
+    a spline in log area. Wavelengths outside the EIS bands get 0, and a
+    single wavelength gives a float. With `short` or `long`, the channel's
+    tabulated areas are returned and `input_wave` is ignored.
+    """
     if short:
         wave, ea = eis_effective_area_read(short=True)
         input_wave = wave
@@ -665,11 +697,13 @@ def eis_ea(input_wave, short=False, long=False):
 def eis_ea_nrl(date, wave, short=False, long=False):
     """Return Warren 2014 effective areas for one date and one or more wavelengths.
 
-    Mirrors SSW ``eis_ea_nrl.pro``. The model is time-dependent: at each
-    wavelength knot the effective area is ``A0 * exp(-t / TAU)`` where ``t``
-    is the elapsed time in years since the reference date. Negative ``TAU``
-    values produce monotone growth at that knot (the published Warren 2014
-    fit has two such SW knots that compensate the dominant decay).
+    Based on SSW's eis_ea_nrl.pro. At each wavelength knot the area is
+    ``A0 * exp(-t / TAU)``, where ``t`` is the time in years since the
+    reference date. A negative ``TAU`` makes the area grow at that knot; the
+    published Warren 2014 fit has two such SW knots, which compensate the
+    dominant decay. Between knots the log area is interpolated linearly.
+    Wavelengths outside the EIS bands get 0. With `short` or `long`, the
+    areas at that channel's knots are returned.
     """
     eis = _load_warren_2014_coefficients()
     t = (get_time_tai(date) - get_time_tai(eis['t0'])) / (86400 * 365.25)
@@ -708,14 +742,13 @@ def eis_ea_nrl(date, wave, short=False, long=False):
     return ea_out
 
 def get_time_tai(date_string):
-    """Convert an ISO timestamp into the IDL-style TAI reference used by Warren 2014."""
-    # Seconds since 1979-01-01 UTC. Only differences between two calls are
-    # used, so the epoch does not matter; the date is read as UTC rather than
-    # the machine's local time zone.
+    """Return seconds since 1979-01-01 UTC for an ISO timestamp, for the Warren 2014 model."""
+    # Only differences between two calls are used, so the epoch does not
+    # matter. The date is read as UTC, not in the local time zone.
     return float((Time(date_string, scale='utc') - Time('1979-01-01T00:00:00', scale='utc')).to_value('s'))
 
 def eis_get_band(wave):
-    """Return the EIS channel label for a wavelength."""
+    """Return 'SW' for 165-213 Angstrom, 'LW' for 245-292 Angstrom, else ''."""
     if 165 <= wave <= 213:
         return 'SW'
     elif 245 <= wave <= 292:
@@ -724,7 +757,7 @@ def eis_get_band(wave):
         return ''
 
 def eis_effective_area_read(short=False, long=False):
-    """Read a pre-flight effective-area curve for the selected EIS channel."""
+    """Read the latest pre-flight effective-area table of the short or long channel."""
     if short:
         response_file = _resolve_response_file(short=True)
     elif long:
@@ -735,7 +768,7 @@ def eis_effective_area_read(short=False, long=False):
     return _read_effective_area_table(response_file)
 
 def is_eis_wavelength(input_wave):
-    """Return whether a wavelength falls within the EIS short or long bands."""
+    """Return ``(short, long)``: whether a wavelength is in 165-213 or 245-292 Angstrom."""
     wave_sw_min = 165
     wave_sw_max = 213
     wave_lw_min = 245
@@ -761,22 +794,24 @@ def _resolve_ncpu(ncpu):
 
 
 def apply_calibration(maps, *, method='del_zanna_2025', ncpu='max'):
-    """Apply a named calibration model to a map, list of maps, or dict of maps.
+    """Apply a named calibration to a map, a list of maps, or a dict of maps.
 
     Parameters
     ----------
     maps : sunpy.map.Map, list, dict, or path-like
-        Input to calibrate.  A ``dict`` value causes each entry to be
-        calibrated recursively.  A path string is loaded as a SunPy map
-        before calibration.
+        A map, a map file path, a list or MapSequence of maps, or a dict of
+        any of these, whose entries are calibrated in turn.
     method : str, default='del_zanna_2025'
-        Calibration method name passed to :func:`calibrate_map`.
+        Calibration method passed to :func:`calibrate_map`.
     ncpu : int or str, default='max'
-        Number of parallel workers when calibrating a list.
+        Number of parallel threads for a list of maps. 'max' uses all
+        available CPUs.
 
     Returns
     -------
-    Same type as ``maps`` with calibration applied.
+    sunpy.map.Map, list or dict
+        A calibrated map for a map or path, a dict with the same keys for a
+        dict, and a list of maps for a list or MapSequence.
     """
     if isinstance(maps, Mapping):
         return {

@@ -1,4 +1,4 @@
-"""Wrappers around EISPAC spectral fitting for EIS rasters."""
+"""Batch fitting of EIS rasters with EISPAC templates."""
 
 import copy
 import eispac
@@ -9,11 +9,11 @@ import numpy as np
 
 
 def _component_count_from_name(template_name):
-    """Return the gaussian component count parsed from an EISPAC template filename.
+    """Return the number of Gaussian components in an EISPAC template filename.
 
-    EISPAC templates use names like ``fe_12_195_119.2c.template.h5`` or
-    ``fe_12_195_119.2c-0.template.h5``. We pick out the ``Nc`` (or ``Nc-i``)
-    token and return ``N``. Defaults to 1 when no token is found.
+    Template names look like ``fe_12_195_119.2c.template.h5`` or
+    ``fe_12_195_119.2c-0.template.h5``, and the number ``N`` is read from the
+    ``Nc`` or ``Nc-i`` part. Defaults to 1 if there is none.
     """
     name = os.path.basename(str(template_name))
     for token in name.split('.'):
@@ -27,7 +27,11 @@ def _component_count_from_name(template_name):
 
 
 def _resolve_output_dir(file, output_dir, output_dir_tree):
-    """Return the resolved output directory for a given input file."""
+    """Return the output directory for an input file.
+
+    The file's own directory if `output_dir` is None, else `output_dir`, with
+    ``YYYY/MM/DD`` subdirectories from the file date if `output_dir_tree`.
+    """
     if output_dir is None:
         return os.path.dirname(file)
     if output_dir_tree:
@@ -37,69 +41,73 @@ def _resolve_output_dir(file, output_dir, output_dir_tree):
 
 
 def _template_line_ids(template_path):
-    """Return normalised line ids for an EISPAC template file."""
+    """Return the line ids of an EISPAC template file, e.g. 'fe_12_195_119'."""
     tpl = eispac.read_template(template_path)
     return [change_line_format(line) for line in tpl.template['line_ids']]
 
 def fit_specific_line(file, iwin, template, lines_to_fit='all', lock_to_window=False, line_label=None, ncpu='max', filter_chi2=None, save=True, ignore_unknown=True, output_dir=None, output_dir_tree=False):
-    """Fit one spectral window with a single template.
+    """Fit one spectral window with one template.
 
     Parameters
     ----------
     file : str
         Input EIS ``.data.h5`` file.
     iwin : int
-        Spectral window index to read from ``file``.
+        Spectral window index in `file`.
     template : str or object
         EISPAC template path or template object.
     lines_to_fit : list[str] or 'all', default='all'
-        Subset of normalised line identifiers to keep after fitting.
+        Lines to keep, e.g. 'fe_12_195_119'. Without `lock_to_window`, saved
+        files of other lines are deleted.
     lock_to_window : bool, default=False
-        If ``True``, keep one saved output named after the spectral window.
+        If True, keep one saved file, named after `line_label`, and delete
+        the others.
     line_label : str, optional
-        Output label used when ``lock_to_window`` is enabled.
+        Line label for the saved file when `lock_to_window` is True.
     ncpu : int or str, default='max'
-        Number of CPUs to pass to ``eispac.fit_spectra``.
+        Number of CPUs passed to ``eispac.fit_spectra``.
     filter_chi2 : float, optional
-        Mask fitted values where chi-squared exceeds this threshold.
+        Set fitted values and errors to NaN where chi-squared exceeds this
+        value.
     save : bool, default=True
-        Whether to save fit products to disk.
+        Save the fit files.
     ignore_unknown : bool, default=True
-        Delete outputs whose filenames contain ``unknown``.
+        Without `lock_to_window`, delete saved files whose names contain
+        'unknown'.
     output_dir : str, optional
-        Directory where fit products should be written.
+        Directory for the fit files. Defaults to the directory of `file`.
     output_dir_tree : bool, default=False
-        If ``True``, append ``YYYY/MM/DD`` directories beneath ``output_dir``.
+        If True, write to ``YYYY/MM/DD`` subdirectories of `output_dir`.
 
     Returns
     -------
     object or None
-        In-memory EISPAC fit result, or ``None`` if the work was skipped.
+        EISPAC fit result, or None if the fit was skipped.
     """
-    # Determine the output directory only when file output is requested.
+    # The output directory is only needed when saving.
     if save:
         if output_dir is None:
             print('No output directory specified. Saving to the same directory as the input file.')
             output_dir = os.path.dirname(file)
         else:
             if output_dir_tree:
-                # Create a directory tree based on the file date
                 file_date = os.path.basename(file).split('.')[0].split('_')[1]
                 output_dir = os.path.join(output_dir, file_date[:4], file_date[4:6], file_date[6:8])
             os.makedirs(output_dir, exist_ok=True)
 
-    # Check if the fit already exists when locked to windows
+    # With lock_to_window, skip if the window's fit file exists.
     if save and lock_to_window:
         new_filename_window = os.path.join(output_dir, f"{os.path.basename(file).split('.')[0]}.{line_label.replace(' ', '_').replace('.', '_').lower()}.fit.h5")
         if os.path.exists(new_filename_window):
             print(f"Fit already exists for {line_label} and using lock_to_window so skipping.")
             return
 
-    # Read the template before loading the cube so cheap skip checks can run first.
+    # Read the template before the cube, so the cheap skip checks run first.
     template_reference = str(template)
     template = eispac.read_template(template)
 
-    # Check whether all the lines in the template have already been fitted
+    # Skip if no template line is wanted, or if all template lines or all
+    # wanted lines already have fit files.
     template_lines = template.template['line_ids']
     template_lines = [change_line_format(line) for line in template_lines]
     print(f"Template lines: {template_lines}")
@@ -109,12 +117,10 @@ def fit_specific_line(file, iwin, template, lines_to_fit='all', lock_to_window=F
         return
 
     if save:
-        # if all the lines in the template have already been fitted, skip
         if all([os.path.exists(os.path.join(output_dir, f"{os.path.basename(file).split('.')[0]}.{line}.fit.h5")) for line in template_lines]):
             print(f"All lines in the template have already been fitted. Skipping.")
             return
 
-        # if all the lines_to_fit have already been fitted, skip
         if lines_to_fit != 'all':
             if all([os.path.exists(os.path.join(output_dir, f"{os.path.basename(file).split('.')[0]}.{line}.fit.h5")) for line in lines_to_fit]):
                 print(f"All lines in the list of lines to fit have already been fitted. Skipping.")
@@ -125,7 +131,6 @@ def fit_specific_line(file, iwin, template, lines_to_fit='all', lock_to_window=F
     fit = eispac.fit_spectra(cube, template, ncpu=ncpu)
 
     if filter_chi2 is not None:
-        # where the chi2 is greater than the filter_chi2, set the fit to np.nan
         for key in fit.fit.keys():
             if key in ['int', 'err_int', 'vel', 'err_vel', 'width', 'err_width', 'params', 'perror']:
                 fit.fit[key][fit.fit['chi2'] > filter_chi2] = np.nan
@@ -133,13 +138,12 @@ def fit_specific_line(file, iwin, template, lines_to_fit='all', lock_to_window=F
     kept_saved_fits = []
 
     if save:
-        # Save the fit result
         saved_fits = eispac.save_fit(fit, save_dir=output_dir)
-        if not isinstance(saved_fits, list): saved_fits = [saved_fits]  # Ensure saved_fits is a list even if only one file is returned
-        saved_fits = [str(f) for f in saved_fits]  # Turn the pathlib.PosixPath objects into strings
+        if not isinstance(saved_fits, list): saved_fits = [saved_fits]
+        saved_fits = [str(f) for f in saved_fits]
 
-        # If lock_to_window is True, keep only one file and rename it
-        if lock_to_window:  ### TODO: Optimise selection ###
+        # Keep only the first file, renamed after the window's line.
+        if lock_to_window:  # TODO: optimise the selection
 
             os.rename(saved_fits[0], new_filename_window)
             print(f"Fit saved to {new_filename_window} (by renaming {saved_fits[0]})")
@@ -152,23 +156,22 @@ def fit_specific_line(file, iwin, template, lines_to_fit='all', lock_to_window=F
 
         else:
 
-            # Loop over all saved fits, delete the unwanted ones, and rename the one we want to keep
+            # Delete unwanted files and drop the component part from the names of the others.
             for saved_fit in saved_fits:
 
-                # if any of the saved fits contain "unknown", delete them
                 if "unknown" in str(saved_fit) and ignore_unknown:
                     os.remove(saved_fit)
                     print(f"Deleted {saved_fit} as it contains 'unknown'")
                     continue
 
-                # if it isn't a line to fit, delete it
                 if lines_to_fit != 'all':
                     if os.path.basename(saved_fit).split('.')[1] not in lines_to_fit:
                         os.remove(saved_fit)
                         print(f"Deleted {saved_fit} as it is not in the list of lines to fit")
                         continue
 
-                # Convert e.g. eis_20130116_093720.al_09_284_015.2c-0.fit.h5 to eis_20130116_093720.al_09_284_015.fit.h5
+                # e.g. eis_20130116_093720.al_09_284_015.2c-0.fit.h5 becomes
+                # eis_20130116_093720.al_09_284_015.fit.h5
                 new_filename_line = os.path.join(os.path.dirname(saved_fit), os.path.basename(saved_fit).split('.')[0]+'.'+os.path.basename(saved_fit).split('.')[1]+'.'+os.path.basename(saved_fit).split('.')[3]+'.'+os.path.basename(saved_fit).split('.')[4])
                 if not os.path.exists(new_filename_line):
                     os.rename(saved_fit, new_filename_line)
@@ -184,51 +187,53 @@ def fit_specific_line(file, iwin, template, lines_to_fit='all', lock_to_window=F
     return fit
 
 def batch(files, lines_to_fit='all', ncpu='max', filter_chi2=None, save=True, output_dir=None, output_dir_tree=False, lock_to_window=False, list_lines_only=False, skip_done=True):
-    """Fit one or more EIS rasters or list their available lines.
+    """Fit one or more EIS rasters, or list their available lines.
 
-    Template selection
-    ------------------
-    For each spectral window we collect every candidate template returned by
-    ``eispac.core.match_templates``. Templates whose filename contains
-    ``unknown`` are dropped. The remaining templates are deduplicated per
-    spectral line: if several templates fit the same line, the one with the
-    highest gaussian component count is kept (more components handle blends
-    better). When ``lines_to_fit`` is a list, templates that do not include any
-    requested line are skipped entirely so they are not fit at all.
+    For each spectral window, the candidate templates are those from
+    ``eispac.core.match_templates`` whose filenames do not contain 'unknown'.
+    If several templates fit the same line, the one with the most Gaussian
+    components is used, as more components handle blends better. With a
+    list of `lines_to_fit`, templates without any of those lines are not
+    fitted. Each chosen template is fitted once per window.
 
-    After fitting, when a single line is requested per template the fit
-    result's ``main_component`` is set to that line's gaussian index so the
-    downstream ``get_map`` calls always pick the correct component.
+    Without `lock_to_window`, each fit result has ``main_component`` set to
+    the component of its line, so that later ``get_map`` calls use the right
+    Gaussian. A template chosen for several lines gives one shallow copy of
+    the fit result per line.
 
     Parameters
     ----------
     files : list[str]
         Input EIS ``.data.h5`` files.
     lines_to_fit : list[str] or 'all', default='all'
-        Subset of line identifiers to keep.
+        Lines to fit, e.g. 'fe_12_195_119'. Ignored with `lock_to_window`.
     ncpu : int or str, default='max'
         Number of CPUs used by EISPAC.
     filter_chi2 : float, optional
-        Chi-squared threshold used for masking poor fits.
+        Set fitted values and errors to NaN where chi-squared exceeds this
+        value.
     save : bool, default=True
-        Whether to write fit products to disk.
+        Write the fit files.
     output_dir : str, optional
-        Directory to write fit files into.
+        Directory for the fit files. Defaults to the directory of each input
+        file.
     output_dir_tree : bool, default=False
-        If ``True``, create ``YYYY/MM/DD`` directories under ``output_dir``.
+        If True, write to ``YYYY/MM/DD`` subdirectories of `output_dir`.
     lock_to_window : bool, default=False
-        If ``True``, keep one product per spectral window.
+        If True, fit one template per spectral window (a 1-component one if
+        there is one, else the first candidate) and keep one result per
+        window, named after the window's line.
     list_lines_only : bool, default=False
-        If ``True``, return discoverable line identifiers instead of fitting.
+        If True, return the available lines instead of fitting.
     skip_done : bool, default=True
-        When ``save=True`` and ``output_dir`` is set, skip fitting for any
-        raster whose output ``.fit.h5`` file already exists and load the
-        saved result from disk instead.
+        With ``save=True`` and `output_dir` set, load the existing
+        ``.fit.h5`` files instead of fitting when all the files expected
+        from a window or template exist.
 
     Returns
     -------
     list[str] or list[object]
-        Available line identifiers or in-memory EISPAC fit results.
+        Available lines, or EISPAC fit results.
     """
     all_possible_lines = []
     fit_results = []
@@ -278,8 +283,8 @@ def batch(files, lines_to_fit='all', ncpu='max', filter_chi2=None, save=True, ou
                     fit_results.append(fit_result)
                 continue
 
-            # Non-lock mode: pick the best (most components) template per line,
-            # filtered by lines_to_fit, then fit each unique template once.
+            # For each wanted line, choose the template with the most
+            # components, then fit each chosen template once.
             best_by_line = {}  # line_id -> (n_components, template_path, component_index)
             for tpath in candidate_templates:
                 tpl_lines = _template_line_ids(tpath)
@@ -294,8 +299,7 @@ def batch(files, lines_to_fit='all', ncpu='max', filter_chi2=None, save=True, ou
             if not best_by_line:
                 continue
 
-            # Group requested lines by their chosen template so each template
-            # is fit at most once per window.
+            # Group the lines by their chosen template.
             templates_to_lines = {}  # tpath -> list[(line_id, component_index)]
             for line_id, (_n, tpath, idx) in best_by_line.items():
                 templates_to_lines.setdefault(tpath, []).append((line_id, idx))
@@ -322,11 +326,10 @@ def batch(files, lines_to_fit='all', ncpu='max', filter_chi2=None, save=True, ou
                             fit_results.append(fit_obj)
                         continue
 
-                # Save only the lines this template was chosen for. A template
-                # can also contain a line that another template in the window
-                # was chosen for; saving it here would leave that line's file
-                # from the wrong template, with the other template's component
-                # index applied when it is read back.
+                # Save only the lines this template was chosen for. Saving a
+                # line chosen for another template would leave that line's
+                # file from the wrong template, read back later with the other
+                # template's component index.
                 fit_result = fit_specific_line(
                     file, iwin, tpath,
                     lines_to_fit=[line_id for line_id, _ in line_idx_pairs],
@@ -336,16 +339,14 @@ def batch(files, lines_to_fit='all', ncpu='max', filter_chi2=None, save=True, ou
                 if fit_result is None:
                     continue
 
-                # If a single requested line uses this template, override
-                # main_component so downstream maps pick the right gaussian.
+                # Set main_component so that maps use this line's Gaussian.
                 if len(line_idx_pairs) == 1:
                     _line_id, comp_idx = line_idx_pairs[0]
                     fit_result.fit['main_component'] = comp_idx
                     fit_results.append(fit_result)
                 else:
-                    # Multi-line template: emit one shallow-copied fit per line
-                    # with its own main_component so each downstream map is built
-                    # from the correct gaussian.
+                    # One shallow copy per line, each with its own
+                    # main_component.
                     for _line_id, comp_idx in line_idx_pairs:
                         fit_copy = copy.copy(fit_result)
                         fit_copy.fit = dict(fit_result.fit)
@@ -358,7 +359,7 @@ def batch(files, lines_to_fit='all', ncpu='max', filter_chi2=None, save=True, ou
 
 
 def list_fit_lines(files):
-    """Return all line identifiers discoverable in the supplied rasters."""
+    """Return the lines covered by the matching EISPAC templates of the rasters."""
     return batch(list(files), list_lines_only=True)
 
 
@@ -376,8 +377,8 @@ def fit(
 ):
     """Fit one or more EIS rasters and return EISPAC fit results.
 
-    Thin public wrapper around :func:`batch` that infers ``save`` from
-    ``output_dir`` when ``save`` is not explicitly provided.
+    The arguments are as for :func:`batch`, except that `save` defaults to
+    True when `output_dir` is given and False otherwise.
     """
     resolved_save = (output_dir is not None) if save is None else save
     return batch(

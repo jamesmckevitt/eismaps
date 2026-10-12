@@ -1,7 +1,7 @@
-"""Utility helpers for EISMaps.
+"""Helper functions for EISMaps.
 
-Consolidates Roman numeral conversion, EIS line label formatting, width-to-
-velocity lookup, and EIS-specific plot defaults in a single module.
+Roman numerals, EIS line labels, thermal velocities of ions, and plot
+defaults for EIS maps.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 def int_to_roman(input_integer):
-    """Convert an integer to a Roman numeral."""
+    """Convert an integer from 1 to 3999 to a Roman numeral."""
     if isinstance(input_integer, bool) or not isinstance(input_integer, int):
         raise TypeError("expected integer, got %s" % type(input_integer))
     if not 0 < input_integer < 4000:
@@ -66,7 +66,10 @@ def roman_to_int(roman_str):
 # ---------------------------------------------------------------------------
 
 def change_line_format(line):
-    """Convert a human-readable line label into the package filename format."""
+    """Convert a line label to the package filename format.
+
+    For example 'Fe XII 195.119' becomes 'fe_12_195_119'.
+    """
 
     elements, ion, wavelength = line.split()
     formatted_element = elements.lower()
@@ -77,7 +80,7 @@ def change_line_format(line):
     formatted_ion = roman_to_int(ion)
     formatted_wavelength = wavelength.replace('.', '_')
 
-    # If the formatted ion integer is only one digit, add a zero before
+    # Pad the ion number to two digits.
     if formatted_ion < 10:
         formatted_ion = f'0{formatted_ion}'
 
@@ -90,7 +93,7 @@ def change_line_format(line):
 
 @lru_cache(maxsize=1)
 def _load_ion_equilibriums():
-    """Load the packaged ion equilibrium lookup table."""
+    """Load the packaged ion equilibrium table, eis_width2velocity.dat."""
     dat_path = files('eismaps').joinpath('eis_width2velocity.dat')
     ion_equilibriums = pd.read_fwf(dat_path, widths=[7, 10, 10, 10], skiprows=9, header=None)
     ion_equilibriums.columns = ['ELEM', 'ION', 'T_MAX', 'V_THERM']
@@ -98,9 +101,14 @@ def _load_ion_equilibriums():
 
 
 def width2velocity(element, ion):
-    """Return the equilibrium temperature and thermal velocity for an ion."""
-    element = element.capitalize()  # Ensure the element is in title case
-    ion = int_to_roman(ion)  # Convert the ion number to roman numerals
+    """Return the temperature of peak ionisation fraction and thermal velocity of an ion.
+
+    Returns ``(t_max, v_therm)``: log10 of the temperature in K and the
+    velocity in km/s, from eis_width2velocity.dat. Raises ValueError for an
+    ion that is not in the table.
+    """
+    element = element.capitalize()
+    ion = int_to_roman(ion)
 
     ion_equilibriums = _load_ion_equilibriums()
 
@@ -121,14 +129,14 @@ def width2velocity(element, ion):
 # ---------------------------------------------------------------------------
 
 def _copy_cmap(name: str, bad_color: str):
-    """Return a mutable colormap copy with a configured NaN color."""
+    """Return a copy of a colormap with `bad_color` for NaN values."""
     cmap = plt.get_cmap(name).copy()
     cmap.set_bad(color=bad_color)
     return cmap
 
 
 def infer_measurement(map_obj, measurement: str | None = None) -> str | None:
-    """Infer an eismaps measurement name from explicit input or map metadata."""
+    """Return `measurement`, or else the measurement name from the map's `measrmnt`, or None."""
     if measurement is not None:
         return measurement
 
@@ -149,7 +157,7 @@ def infer_measurement(map_obj, measurement: str | None = None) -> str | None:
 
 
 def format_bunit(bunit) -> str | None:
-    """Return a readable unit string suitable for plot labels."""
+    """Return a short unit string for plot labels, e.g. 'erg/s/cm2/sr', or None."""
     if bunit is None:
         return None
 
@@ -205,12 +213,15 @@ def _finite_values(data):
 
 
 def apply_default_plot_settings(map_obj, measurement: str | None = None):
-    """Mutate a map's plot settings with EIS-specific cmap, norm, and aspect defaults.
+    """Set a map's colour map, normalisation and aspect for plotting, in place.
 
-    SunPy's ``GenericMap.plot`` defaults to ``aspect=1`` (equal screen pixels),
-    which distorts non-square data pixels such as EIS rasters (CDELT1 != CDELT2).
-    We set ``aspect = |CDELT2/CDELT1|`` so each arcsec on the screen is equal in
-    X and Y, producing a correctly proportioned image.
+    The map is also returned. SunPy's ``GenericMap.plot`` defaults to
+    ``aspect=1``, drawing each pixel square, which distorts EIS rasters,
+    whose pixels are not square on the sky (CDELT1 != CDELT2). The aspect is
+    set to ``|CDELT2/CDELT1|`` so that an arcsec has the same length on
+    screen in X and Y. The colour map and normalisation depend on the
+    measurement, given or inferred from the map's `measrmnt` (see
+    infer_measurement).
     """
     try:
         cdelt = map_obj.wcs.wcs.cdelt
