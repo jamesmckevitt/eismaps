@@ -16,6 +16,7 @@ from eismaps.utils import apply_default_plot_settings
 
 CC = 2.9979E+5 # speed of light
 UNCERTAINTY_MEASUREMENTS = {'int_err': 'int', 'vel_err': 'vel', 'wid_err': 'wid'}
+MEASUREMENT_PARAMETERS = {'vel': 'centroid', 'vel_err': 'centroid', 'wid': 'width', 'wid_err': 'width', 'ntv': 'width'}
 VALID_MEASUREMENTS = ['int', 'vel', 'wid', 'ntv', 'chi2', *UNCERTAINTY_MEASUREMENTS]
 
 def map_sd_filter(map,stds=3,log=False):
@@ -238,8 +239,9 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
                 raise TypeError(f'{m} map is not floating point; cannot mark failed fits.')
 
             # Pixels without a usable fit of this line are marked as missing
-            # in every measurement (see valid_fit_mask).
-            m_map.data[~valid_fit_mask(fit_res, component=main_component)] = np.nan
+            # in every measurement, and velocities and widths also where
+            # their parameter is not measured (see measurement_mask).
+            m_map.data[~measurement_mask(fit_res, m, component=main_component)] = np.nan
 
             if clip and m in UNCERTAINTY_MEASUREMENTS:
                 raise ValueError('clip=True filters each map independently, so it cannot be combined with uncertainty measurements.')
@@ -311,12 +313,55 @@ def valid_fit_mask(fit_res, component=None):
     zeros in their intensity, width and error arrays and about -c in the
     velocity. A fit can also converge with the line amplitude at its lower
     limit of zero: no line is detected, the errors come out as zero and the
-    centroid and width stay at their starting values. Both are excluded.
+    centroid and width stay at their starting values. A fit with as many
+    free parameters as spectral points has no degrees of freedom and an
+    infinite chi-squared, and sometimes MPFIT cannot compute the parameter
+    errors at all and returns zeros. All of these are excluded: a usable fit
+    has ``status > 0``, a positive amplitude with a nonzero error, and a
+    finite chi-squared.
     """
     if component is None: component = fit_res.fit['main_component']
     status = np.asarray(fit_res.fit['status'])
-    peak = np.asarray(fit_res.fit['params'][:, :, 3 * component])
-    return (status > 0) & (peak > 0)
+    peak = np.asarray(fit_res.fit['params'][:, :, 3 * component], dtype=float)
+    peak_error = np.asarray(fit_res.fit['perror'][:, :, 3 * component], dtype=float)
+    chi2 = np.asarray(fit_res.fit['chi2'], dtype=float)
+    return (status > 0) & (peak > 0) & (peak_error > 0) & np.isfinite(chi2)
+
+
+def parameter_measured(fit_res, parameter, component=None):
+    """Return True where the centroid or width of a usable fit is measured.
+
+    ``parameter`` is ``'centroid'`` or ``'width'``. The fitted value is not
+    a measurement where the parameter ends the fit on one of its template
+    limits, or where MPFIT gives it a zero error: MPFIT does that for a
+    parameter on a limit, for one that is fixed or tied to another in the
+    template, and when it cannot compute the errors. Pixels without a usable
+    fit (see valid_fit_mask) are False.
+    """
+    if component is None: component = fit_res.fit['main_component']
+    index = 3 * component + {'centroid': 1, 'width': 2}[parameter]
+    value = np.asarray(fit_res.fit['params'][:, :, index], dtype=float)
+    error = np.asarray(fit_res.fit['perror'][:, :, index], dtype=float)
+    measured = valid_fit_mask(fit_res, component=component) & (error > 0)
+    info = fit_res.parinfo[index]
+    for side in (0, 1):
+        if info['limited'][side]:
+            measured &= value != info['limits'][side]
+    return measured
+
+
+def measurement_mask(fit_res, measurement, component=None):
+    """Return True where a measurement of one component is kept.
+
+    ``int``, ``int_err`` and ``chi2`` are kept for every usable fit (see
+    valid_fit_mask). ``vel`` and ``vel_err`` also need a measured centroid,
+    and ``wid``, ``wid_err`` and ``ntv`` a measured width (see
+    parameter_measured).
+    """
+    parameter = MEASUREMENT_PARAMETERS.get(measurement)
+    if parameter is None:
+        return valid_fit_mask(fit_res, component=component)
+    return parameter_measured(fit_res, parameter, component=component)
 
 
 def get_velocity(fit_res, component=None):
@@ -326,9 +371,10 @@ def get_velocity(fit_res, component=None):
     rest wavelength from the template, minus the median velocity of each
     raster column (slit position), which EISPAC uses as a rough correction
     for spacecraft temperature changes. Here the median is taken over the
-    pixels with a usable fit only (see valid_fit_mask); EISPAC's median
-    also counts failed fits, whose velocity is about -c. Columns without a
-    usable fit are NaN.
+    pixels with a measured centroid only (see parameter_measured); EISPAC's
+    median also counts failed fits, whose velocity is about -c, and
+    centroids held at a template limit. Columns without a measured centroid
+    are NaN.
     """
     from astropy import constants as const
 
@@ -338,10 +384,10 @@ def get_velocity(fit_res, component=None):
     centroid = np.asarray(fit_res.fit['params'][:, :, centroid_index], dtype=float)
     velocity = const.c.to_value('km/s') * (centroid - rest_wave) / rest_wave
 
-    valid = valid_fit_mask(fit_res, component=component)
+    measured = parameter_measured(fit_res, 'centroid', component=component)
     corrected = np.full(velocity.shape, np.nan)
     for column in range(velocity.shape[1]):
-        good = valid[:, column]
+        good = measured[:, column]
         if good.any():
             corrected[:, column] = velocity[:, column] - np.median(velocity[good, column])
     return corrected
