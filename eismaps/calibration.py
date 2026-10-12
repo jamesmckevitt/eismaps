@@ -17,7 +17,6 @@ from pathlib import Path
 
 import numpy as np
 from astropy.time import Time
-from scipy.interpolate import interp1d
 from scipy.io import readsav
 import sunpy.map
 
@@ -270,6 +269,93 @@ def _spline_interpolate(x_values, y_values, target_values):
         spline = CubicSpline(x_values[s0:s0 + 4], y_values[s0:s0 + 4], bc_type='natural')
         sampled[use] = spline(target_values[use])
     return sampled
+
+
+def _idl_tension_spline(x_values, y_values, target_values, sigma=1.0):
+    """Interpolate as IDL's SPLINE function does: a cubic spline under tension.
+
+    This follows IDL 8.8's lib/spline.pro step for step. `sigma` is the
+    tension, 1 by default as in IDL; the end slopes come from quadratics
+    through the three points at each end, and targets outside the table use
+    the end intervals. `x_values` must be increasing and hold at least three
+    points. A single target gives a float.
+    """
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    n = min(x.size, y.size)
+    if n < 3:
+        raise ValueError('x_values and y_values must have 3 or more elements.')
+    x, y = x[:n], y[:n]
+    targets = np.atleast_1d(np.asarray(target_values, dtype=float))
+    sigma = max(float(sigma), 0.001)
+    nm1 = n - 1
+
+    # Slopes at the two ends.
+    delx1 = x[1] - x[0]
+    dx1 = (y[1] - y[0]) / delx1
+    delx2 = x[2] - x[1]
+    delx12 = x[2] - x[0]
+    c1 = -(delx12 + delx1) / delx12 / delx1
+    c2 = delx12 / delx1 / delx2
+    c3 = -delx1 / delx12 / delx2
+    slpp1 = c1 * y[0] + c2 * y[1] + c3 * y[2]
+    deln = x[nm1] - x[nm1 - 1]
+    delnm1 = x[nm1 - 1] - x[nm1 - 2]
+    delnn = x[nm1] - x[nm1 - 2]
+    c1 = (delnn + deln) / delnn / deln
+    c2 = -delnn / deln / delnm1
+    c3 = deln / delnn / delnm1
+    slppn = c3 * y[nm1 - 2] + c2 * y[nm1 - 1] + c1 * y[nm1]
+
+    # Tridiagonal system for the second-derivative terms.
+    yp = np.zeros(2 * n)
+    sigmap = sigma * nm1 / (x[nm1] - x[0])
+    dels = sigmap * delx1
+    exps = np.exp(dels)
+    sinhs = 0.5 * (exps - 1.0 / exps)
+    sinhin = 1.0 / (delx1 * sinhs)
+    diag1 = sinhin * (dels * 0.5 * (exps + 1.0 / exps) - sinhs)
+    diagin = 1.0 / diag1
+    yp[0] = diagin * (dx1 - slpp1)
+    spdiag = sinhin * (sinhs - dels)
+    yp[n] = diagin * spdiag
+
+    delx2 = np.diff(x)
+    dx2 = np.diff(y) / delx2
+    dels = sigmap * delx2
+    exps = np.exp(dels)
+    sinhs = 0.5 * (exps - 1.0 / exps)
+    sinhin = 1.0 / (delx2 * sinhs)
+    diag2 = sinhin * (dels * (0.5 * (exps + 1.0 / exps)) - sinhs)
+    diag2 = np.concatenate([[0.0], diag2[:-1] + diag2[1:]])
+    dx2nm1 = dx2[nm1 - 1]
+    dx2 = np.concatenate([[0.0], dx2[1:] - dx2[:-1]])
+    spdiag = sinhin * (sinhs - dels)
+    for i in range(1, nm1):
+        diagin = 1.0 / (diag2[i] - spdiag[i - 1] * yp[i + n - 1])
+        yp[i] = diagin * (dx2[i] - spdiag[i - 1] * yp[i - 1])
+        yp[i + n] = diagin * spdiag[i]
+    # IDL uses the first interval's diagonal term here.
+    diagin = 1.0 / (diag1 - spdiag[nm1 - 1] * yp[n + nm1 - 1])
+    yp[nm1] = diagin * (slppn - dx2nm1 - spdiag[nm1 - 1] * yp[nm1 - 1])
+    for i in range(n - 2, -1, -1):
+        yp[i] = yp[i] - yp[i + n] * yp[i + 1]
+
+    # Evaluate on the interval holding each target.
+    subs = np.clip(np.searchsorted(x, targets, side='right'), 1, nm1)
+    subs1 = subs - 1
+    del1 = targets - x[subs1]
+    del2 = x[subs] - targets
+    dels = x[subs] - x[subs1]
+    exps1 = np.exp(sigmap * del1)
+    sinhd1 = 0.5 * (exps1 - 1.0 / exps1)
+    exps = np.exp(sigmap * del2)
+    sinhd2 = 0.5 * (exps - 1.0 / exps)
+    exps = exps1 * exps
+    sinhs = 0.5 * (exps - 1.0 / exps)
+    spl = ((yp[subs] * sinhd1 + yp[subs1] * sinhd2) / sinhs
+           + ((y[subs] - yp[subs]) * del1 + (y[subs1] - yp[subs1]) * del2) / dels)
+    return float(spl[0]) if np.ndim(target_values) == 0 else spl
 
 
 def _calibrated_meta(map_obj, method, factor=None):
@@ -702,7 +788,8 @@ def eis_ea_nrl(date, wave, short=False, long=False):
     ``A0 * exp(-t / TAU)``, where ``t`` is the time in years since the
     reference date. A negative ``TAU`` makes the area grow at that knot; the
     published Warren 2014 fit has two such SW knots, which compensate the
-    dominant decay. Between knots the log area is interpolated linearly.
+    dominant decay. The log area is interpolated between knots with IDL's
+    tension spline (see _idl_tension_spline), as eis_ea_nrl.pro does.
     Wavelengths outside the EIS bands get 0. With `short` or `long`, the
     areas at that channel's knots are returned.
     """
@@ -734,8 +821,7 @@ def eis_ea_nrl(date, wave, short=False, long=False):
             print(f"WAVELENGTH OUT OF BOUNDS {wave[i]}")
             continue
 
-        interp_func = interp1d(w, e, kind='linear')
-        ea_out[i] = np.exp(interp_func(wave[i]))
+        ea_out[i] = np.exp(_idl_tension_spline(w, e, wave[i]))
 
     if nWave == 1:
         ea_out = ea_out[0]
