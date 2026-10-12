@@ -9,6 +9,7 @@ Carrington map.
 
 import contextlib
 import copy
+import numbers
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
@@ -903,6 +904,8 @@ def make_carrington_map(map_files, save_dir, wavelength, measurement, overlap, a
             overlap = np.nan
         elif overlap not in ('max', 'mean'):
             raise ValueError("overlap must be 'max', 'mean', 'nan' or a number.")
+    elif not isinstance(overlap, numbers.Real):
+        raise ValueError("overlap must be 'max', 'mean', 'nan' or a number.")
 
     map_files = _normalise_map_collection(map_files)
 
