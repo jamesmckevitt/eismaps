@@ -261,7 +261,7 @@ def _exact_overlap_weights(map_in, wcs_out, shape_out, output_corners):
     return out_index, in_index[keep], frac
 
 
-def _weighted_resample(weights, data, n_out, uncertainty=False):
+def _weighted_resample(weights, data, n_out, uncertainty=False, use=None):
     """Resample one raster array onto the output grid with exact weights.
 
     With ``uncertainty=False`` this returns ``sum(f*x)/sum(f)``, which is what
@@ -270,9 +270,17 @@ def _weighted_resample(weights, data, n_out, uncertainty=False):
     ``uncertainty=True`` the input is a 1-sigma uncertainty and the result is
     ``sqrt(sum(f**2 * sigma**2)) / sum(f)``, the uncertainty of that weighted
     mean for independent input pixels.
+
+    ``use`` (a boolean array on the raster grid) restricts the sums to those
+    input pixels, so an output pixel is the weighted mean of the selected
+    pixels it overlaps, and NaN only if it overlaps none.
     """
     out_index, in_index, frac = weights
     values = np.asarray(data, dtype=float).ravel()[in_index]
+    if use is not None:
+        selected = np.asarray(use, dtype=bool).ravel()[in_index]
+        frac = np.where(selected, frac, 0.0)
+        values = np.where(selected, values, 0.0)
     denominator = np.bincount(out_index, weights=frac, minlength=n_out)
     if uncertainty:
         numerator = np.sqrt(np.bincount(out_index, weights=(values * frac) ** 2, minlength=n_out))
@@ -356,12 +364,15 @@ def _companion_array(companion_input, primary_map, label):
 def _mosaic_with_exact_weights(
     map_files, uncertainty_inputs, companion_inputs, first_map, fd_map, overlap,
     apply_rotation, preserve_limb, drag_rotate, remove_off_disk, apply_los_correction,
+    skip_nan=False,
 ):
     """Assemble a full-disk mosaic plus its uncertainty and companion maps.
 
     Every raster is resampled with the weights reproject's exact algorithm
     uses (see _exact_overlap_weights), computed once per raster and applied
-    to the value, its uncertainty and every companion. Overlapping rasters
+    to the value, its uncertainty and every companion. With ``skip_nan``,
+    raster pixels whose value is NaN are left out of these sums, for the
+    value and for its uncertainty and companions alike. Overlapping rasters
     are then combined per pixel:
 
     - 'max': the value with the largest magnitude wins, as in
@@ -426,13 +437,14 @@ def _mosaic_with_exact_weights(
         with _reprojection_context(geometry_map, apply_rotation, drag_rotate, preserve_limb):
             weights = _exact_overlap_weights(geometry_map, wcs_out, shape_out, output_corners)
 
-        new = _weighted_resample(weights, data, n_out)
+        use = ~np.isnan(data) if skip_nan else None
+        new = _weighted_resample(weights, data, n_out, use=use)
         new_valid = ~np.isnan(new)
         new_sigma = None
         if sigma is not None:
-            new_sigma = _weighted_resample(weights, sigma, n_out, uncertainty=True)
+            new_sigma = _weighted_resample(weights, sigma, n_out, uncertainty=True, use=use)
             new_sigma[~new_valid] = np.nan
-        new_companions = {name: _weighted_resample(weights, arr, n_out) for name, arr in companions.items()}
+        new_companions = {name: _weighted_resample(weights, arr, n_out, use=use) for name, arr in companions.items()}
 
         if overlap == 'max':
             take = new_valid & (np.isnan(combined) | (np.abs(new) > np.abs(combined)))
@@ -520,6 +532,7 @@ def make_helioprojective_map(
     reference_map: Literal['first', 'last'] = 'first',
     uncertainty: Optional[List[object]] = None,
     companions: Optional[dict] = None,
+    skip_nan: bool = False,
 ):
     """
     Create a helioprojective full disk map from multiple EIS raster maps.
@@ -585,6 +598,14 @@ def make_helioprojective_map(
         ``map_files`` and on the same raster grid. They are resampled with the same weights as the values;
         with ``overlap='max'`` each pixel comes from the raster that supplied
         the value, with ``overlap='mean'`` they are averaged. Requires
+        ``algorithm='exact'``.
+    skip_nan : bool, default=False
+        By default a NaN raster pixel (for example a spectrum that could not
+        be fitted) makes every output pixel it overlaps NaN, as in
+        ``reproject_exact``. With ``skip_nan=True`` NaN pixels are left out:
+        each output pixel is the area-weighted mean of the valid raster pixels
+        it overlaps, and NaN only if it overlaps none. Uncertainties and
+        companions use the same pixels as the values. Requires
         ``algorithm='exact'``.
 
     Returns
@@ -684,9 +705,9 @@ def make_helioprojective_map(
 
     fd_map = apply_default_plot_settings(sunpy.map.Map(fd_data, fd_header))
 
-    if uncertainty is not None or companions is not None:
+    if uncertainty is not None or companions is not None or skip_nan:
         if algorithm != 'exact':
-            raise ValueError("uncertainty and companions are propagated with the exact reprojection weights, so they need algorithm='exact'.")
+            raise ValueError("uncertainty, companions and skip_nan use the exact reprojection weights, so they need algorithm='exact'.")
         uncertainty_inputs = None
         if uncertainty is not None:
             uncertainty_inputs = _normalise_map_collection(uncertainty)
@@ -699,10 +720,14 @@ def make_helioprojective_map(
             companion_inputs[name] = _normalise_map_collection(companion)
             if len(companion_inputs[name]) != len(map_files):
                 raise ValueError(f"Got {len(companion_inputs[name])} '{name}' maps for {len(map_files)} value maps.")
-        return _mosaic_with_exact_weights(
+        fd_map, overlap_map, extras = _mosaic_with_exact_weights(
             map_files, uncertainty_inputs, companion_inputs, first_map, fd_map, overlap,
             apply_rotation, preserve_limb, drag_rotate, remove_off_disk, apply_los_correction,
+            skip_nan=skip_nan,
         )
+        if uncertainty is None and companions is None:
+            return fd_map, overlap_map
+        return fd_map, overlap_map, extras
 
     overlap_mask = np.zeros((fd_height, fd_width))
     combined_data = np.full((fd_height, fd_width), np.nan)

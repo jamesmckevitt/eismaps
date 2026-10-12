@@ -169,6 +169,7 @@ fd_chi2 = extras['chi2']
 - `uncertainty` and `companions` need `algorithm='exact'`; the values are then identical to those without them
 - with `overlap='max'`, each pixel's uncertainty and companions come from the raster that supplied its value; with `overlap='mean'` the uncertainty is that of the mean
 - the uncertainty of a resampled pixel accounts for the EIS pixels it averages, assuming their errors are independent
+- by default a NaN raster pixel makes every output pixel it overlaps NaN, as in `reproject_exact`; `skip_nan=True` leaves NaN pixels out, so each output pixel averages the valid pixels it overlaps (needs `algorithm='exact'`)
 
 Use `make_carrington_map()` when you want a Carrington projection instead of a helioprojective full-disk map.
 
