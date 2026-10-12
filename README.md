@@ -100,8 +100,10 @@ Behaviour:
 - a single requested measurement returns a SunPy map or `MapSequence`
 - multiple requested measurements return a dictionary keyed by measurement name
 - supported measurements are `int`, `vel`, `wid`, `ntv`, `chi2`, and the fit uncertainties `int_err`, `vel_err` and `wid_err`
-- pixels without a usable fit are NaN in every measurement: spectra EISPAC could not fit, and fits whose line amplitude is zero
-- `vel` is EISPAC's Doppler velocity minus the median of each raster column, with the median taken over usable fits only
+- pixels without a usable fit are NaN in every measurement: spectra EISPAC could not fit, fits whose line amplitude is zero or has no error, and fits with no degrees of freedom (infinite chi-squared)
+- `vel` and `vel_err` are also NaN where the fitted centroid is not a measurement, and `wid`, `wid_err` and `ntv` where the width is not: the parameter ended the fit on one of its template limits, or MPFIT gave it a zero error (it does so for parameters on a limit, for parameters fixed or tied in the template, and when it cannot compute the errors)
+- `vel` is EISPAC's Doppler velocity minus the median of each raster column, with the median taken over measured centroids only
+- `int_err` is EISPAC's intensity error, which has no width term where the width error is zero (for example a width on a limit)
 
 Useful options:
 
