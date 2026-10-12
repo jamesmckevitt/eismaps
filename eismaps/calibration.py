@@ -121,9 +121,10 @@ GDZ_2013_REFERENCE_DATE = '2006-09-22T21:36:00.000'
 GDZ_2013_LAST_DATE = '2012-09-14T00:00:00.000'
 GDZ_2013_LW_COEFFICIENTS = np.array([1.0326230, -5.2495791e-09, 1.2055185e-17], dtype=float)
 
-# Warren 2014 NRL coefficients, version 1.3 (Mar 2014): the model coefficients
-# in nrl_ea_coeff_v1.3.genx, which SSW's eis_ea_nrl.pro reads into a common
-# block. Reference: Warren, Ugarte-Urra & Landi 2014, ApJS 213, 11.
+# Warren 2014 NRL coefficients, version 1.3 (file dated March 2014, in SSW
+# since February 2016): the model coefficients in nrl_ea_coeff_v1.3.genx,
+# which SSW's eis_ea_nrl.pro reads into a common block. Reference: Warren,
+# Ugarte-Urra & Landi 2014, ApJS 213, 11.
 WARREN_2014_VERSION = '1.3'
 WARREN_2014_REFERENCE_DATE = '2006-09-22T00:00:00.000'
 WARREN_2014_WAVE_KNOTS_SW = np.array(

@@ -204,7 +204,7 @@ The calibration code reads files in `eismaps/calibration_data/`, and the non-the
 | `eis_width2velocity.dat` (package root) | `hinode/eis/idl/atest/hwarren/eis_width2velocity.dat` | Non-thermal velocity helper (`eismaps.utils.width2velocity`) |
 | `sources.json` | written by the sync helper | Provenance manifest of the copied files |
 
-The Warren 2014 NRL coefficients and the Del Zanna 2013 spline points are not files: they are constants in `eismaps/calibration.py` (`WARREN_2014_*` and `GDZ_2013_*`). SSW's `eis_ltds.pro` also holds the Del Zanna 2013 points in its source, while `eis_ea_nrl.pro` reads the Warren 2014 coefficients from `nrl_ea_coeff_v1.3.genx`. Both sets are stable: the Warren 2014 NRL set is at v1.3 (Feb 2016) and the GDZ 2013 set has not been revised.
+The Warren 2014 NRL coefficients and the Del Zanna 2013 spline points are not files: they are constants in `eismaps/calibration.py` (`WARREN_2014_*` and `GDZ_2013_*`). SSW's `eis_ltds.pro` also holds the Del Zanna 2013 points in its source, while `eis_ea_nrl.pro` reads the Warren 2014 coefficients from `nrl_ea_coeff_v1.3.genx`. Both sets are stable: the Warren 2014 NRL set is at v1.3 (the coefficients of the paper, dated March 2014 and in SSW since February 2016) and the GDZ 2013 set has not been revised.
 
 ### Refreshing the assets from SolarSoft
 

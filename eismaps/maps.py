@@ -32,7 +32,8 @@ def map_sd_filter(map,stds=3,log=False):
     stds : float, default=3
         Threshold in standard deviations.
     log : bool, default=False
-        Apply the threshold to log10 of the data, ignoring zeros.
+        Apply the threshold to log10 of the data. Values of 0 or below are
+        left unchanged.
 
     Returns
     -------

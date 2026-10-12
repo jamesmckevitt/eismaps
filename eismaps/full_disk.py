@@ -1,9 +1,10 @@
 """Full-disk mosaics of EIS raster maps.
 
 :func:`make_helioprojective_map` combines raster maps into one helioprojective
-map, rotated to the time of a reference map. It can carry uncertainties and
-other quantities through the mosaic with the pixel weights of reproject's
-exact algorithm. :func:`make_carrington_map` makes a Carrington map.
+map, optionally rotated to the time of a reference map. It can carry
+uncertainties and other quantities through the mosaic with the pixel weights
+of reproject's exact algorithm. :func:`make_carrington_map` makes a
+Carrington map.
 """
 
 import contextlib
