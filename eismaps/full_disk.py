@@ -16,15 +16,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from astropy.coordinates import SkyCoord
 import astropy.units as u
-from datetime import datetime
 from sunpy.coordinates import frames
 import sunpy.map
 from matplotlib.colors import LogNorm
 from tqdm import tqdm
-from sunpy.coordinates.frames import Helioprojective
 import sunpy.sun.constants
 from sunpy.physics.differential_rotation import solar_rotate_coordinate
-from sunpy.coordinates import Helioprojective, propagate_with_solar_surface, RotatedSunFrame
+from sunpy.coordinates import propagate_with_solar_surface
 from sunpy.coordinates import SphericalScreen
 from typing import List, Optional, Literal, Union, TYPE_CHECKING
 import logging
@@ -319,31 +317,34 @@ def _reprojection_context(map_obj, apply_rotation, drag_rotate, preserve_limb):
 
 
 def _drag_rotate_map(map_obj, first_map):
-    """Shift a map by the differential rotation of one point since the reference map.
+    """Shift a map by the differential rotation of one point to the reference time.
 
-    The point is the map centre or, if that is 950 arcsec or more from disk
-    centre, the point 950 arcsec from disk centre in the same direction. The
-    rotation uses the Howard model (the RotatedSunFrame default).
+    The point is the map centre or, if that is more than 0.9 solar radii from
+    disk centre, the point 0.9 solar radii out in the same direction. It is
+    rotated to the time of `first_map` with ``propagate_with_solar_surface``
+    (Howard model), as in the default mode, and the map is shifted so that
+    the point lands there when the map is reprojected onto the reference
+    frame. Raises ValueError if the rotated point is off the disk.
     """
-    SAFE_LIMB_DIST_ARCSEC = 950
-    map_center_radial_distance = np.sqrt(map_obj.center.Tx.value ** 2 + map_obj.center.Ty.value ** 2)
+    limit = 0.9 * map_obj.rsun_obs.to_value(u.arcsec)
+    centre = map_obj.center
+    centre_distance = np.hypot(centre.Tx.to_value(u.arcsec), centre.Ty.to_value(u.arcsec))
 
-    if map_center_radial_distance < SAFE_LIMB_DIST_ARCSEC:
-        point = map_obj.center
+    if centre_distance <= limit:
+        point = centre
     else:
-        angle = np.arctan2(map_obj.center.Tx, map_obj.center.Ty)
-        point = SkyCoord(SAFE_LIMB_DIST_ARCSEC * np.sin(angle) * u.arcsec, SAFE_LIMB_DIST_ARCSEC * np.cos(angle) * u.arcsec, obstime=map_obj.date, observer=map_obj.observer_coordinate, frame=Helioprojective)
+        scale = limit / centre_distance
+        point = SkyCoord(centre.Tx * scale, centre.Ty * scale, frame=map_obj.coordinate_frame)
 
-    map_time = datetime.strptime(map_obj.meta['date_obs'], '%Y-%m-%dT%H:%M:%S.%f')
-    first_map_time = datetime.strptime(first_map.meta['date_obs'], '%Y-%m-%dT%H:%M:%S.%f')
-    duration = map_time - first_map_time
-    # Signed seconds: timedelta.seconds is never negative.
-    duration = duration.total_seconds() * u.second
-    diffrot_point = RotatedSunFrame(base=point, duration=duration)
-    transformed_diffrot_point = diffrot_point.transform_to(map_obj.coordinate_frame)
-    shift_x = transformed_diffrot_point.Tx - point.Tx
-    shift_y = transformed_diffrot_point.Ty - point.Ty
-    return map_obj.shift_reference_coord(shift_x, shift_y)
+    with propagate_with_solar_surface(rotation_model='howard'):
+        target = point.transform_to(first_map.coordinate_frame)
+    # The reprojection itself does not rotate, so express the target in the
+    # map's own frame without rotation.
+    target = target.transform_to(map_obj.coordinate_frame)
+    if not (np.isfinite(target.Tx.value) and np.isfinite(target.Ty.value)):
+        raise ValueError(f'drag_rotate: the reference point of the map at {map_obj.date.isot} rotates '
+                         'off the disk; use drag_rotate=False.')
+    return map_obj.shift_reference_coord(target.Tx - point.Tx, target.Ty - point.Ty)
 
 
 def _los_correction_factor(map_obj):
@@ -573,9 +574,9 @@ def make_helioprojective_map(
         Keep off-limb data. If False, off-disk pixels of the result are NaN.
     drag_rotate : bool, default=False
         Instead of rotating each pixel, shift each map as a whole by the
-        rotation of one point: its centre or, if that is 950 arcsec or more
-        from disk centre, the point 950 arcsec out in the same direction.
-        Both use the Howard rotation model.
+        rotation of one point: its centre or, if that is more than 0.9 solar
+        radii from disk centre, the point 0.9 solar radii out in the same
+        direction. Both use the Howard rotation model.
     algorithm : {'exact', 'interpolation', 'adaptive'}, default='exact'
         Reprojection algorithm:
         - 'exact': exact reprojection (slower but more accurate)
