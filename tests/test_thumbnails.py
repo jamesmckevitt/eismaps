@@ -5,9 +5,10 @@ import os
 
 import h5py
 import numpy as np
+import pytest
 from PIL import Image
 
-from eismaps.thumbnails import (MAP_AREA, MAX_MAP_RATIO, _arcsec, _column_zero_point, _map_rectangle,
+from eismaps.thumbnails import (MAP_AREA, fitted_maps, MAX_MAP_RATIO, _arcsec, _column_zero_point, _map_rectangle,
                                 _one_exposure_copy, _exposure_choice, _exposure_factor, _is_done,
                                 _process, _record_path, _summed_intensity, process_raster,
                                 render_thumbnail, RasterUnavailable, thumbnail_path)
@@ -239,6 +240,32 @@ def test_stretched_and_wide_maps_render(tmp_path):
 
 def test_time_axis_fills_the_area():
     assert _map_rectangle((0, 8, -100, 200), False) == MAP_AREA
+
+
+class FakeFit:
+    """Fit of 40 spectra in one column: a line on its width limit, and a pixel with no line."""
+
+    def __init__(self):
+        params = np.tile([100.0, 195.119, 0.03, 10.0], (40, 1, 1))
+        perror = np.tile([5.0, 0.002, 0.002, 1.0], (40, 1, 1))
+        params[0, 0, 2] = 0.05
+        perror[0, 0, 2] = 0.0
+        params[1, 0, 1] = 195.2
+        perror[1, 0, 1] = 0.0
+        params[2, 0, 0] = 1.0
+        self.fit = {'params': params, 'perror': perror, 'status': np.ones((40, 1)), 'chi2': np.ones((40, 1))}
+        self.parinfo = [{}, {'value': 195.119}, {}, {}]
+
+
+def test_values_on_template_limits_are_shown():
+    velocity, width = fitted_maps(FakeFit(), 0)
+    assert width[0, 0] == 0.05
+    assert velocity[1, 0] == pytest.approx(124.5, abs=0.1)
+
+
+def test_weak_peak_is_blank():
+    velocity, width = fitted_maps(FakeFit(), 0)
+    assert np.isnan(velocity[2, 0]) and np.isnan(width[2, 0])
 
 
 def test_all_blank_map_still_renders(tmp_path):

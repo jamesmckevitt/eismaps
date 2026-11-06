@@ -193,26 +193,6 @@ def _mean_spectrum(wave, inten, errs):
     return wave.mean(axis=(0, 1)), mean, np.where(count > 0, error, 0.0)
 
 
-def _parameter_source(fit_res, index):
-    """Return the parameter holding the value and error of a parameter, following any tie."""
-    tied = str(fit_res.parinfo[index].get('tied', '') or '')
-    match = re.search(r'p\[(\d+)\]', tied)
-    return int(match.group(1)) if match else index
-
-
-def _measured(fit_res, index):
-    """Return True where a parameter of a usable fit is off its limits and has an error."""
-    source = _parameter_source(fit_res, index)
-    values = fit_res.fit['params'][:, :, source]
-    errors = fit_res.fit['perror'][:, :, source]
-    measured = errors > 0
-    info = fit_res.parinfo[source]
-    for side in (0, 1):
-        if info['limited'][side]:
-            measured &= values != info['limits'][side]
-    return measured
-
-
 def _column_zero_point(velocity):
     """Return the median velocity of each raster column.
 
@@ -232,8 +212,11 @@ def _column_zero_point(velocity):
 def fitted_maps(fit_res, component):
     """Return velocity and width maps of one component.
 
-    Pixels are left out where the fit is not usable, the peak is below
-    `MIN_PEAK_SNR` errors, or the parameter is on a template limit.
+    Pixels are left out where the fit is not usable or the peak is below
+    `MIN_PEAK_SNR` errors. Values on a template limit are kept, as these are
+    often the brightest and fastest pixels of a flare. They are lower limits
+    on the size of the width or shift. :func:`eismaps.maps.measurement_mask`
+    leaves them out for measurements.
 
     Parameters
     ----------
@@ -256,11 +239,11 @@ def fitted_maps(fit_res, component):
     centroid_index = 3 * component + 1
     rest = float(fit_res.parinfo[centroid_index]['value'])
     velocity = CC * (params[:, :, centroid_index] - rest) / rest
-    velocity = np.where(usable & _measured(fit_res, centroid_index), velocity, np.nan)
+    velocity = np.where(usable, velocity, np.nan)
     velocity = velocity - _column_zero_point(velocity)[None, :]
 
     width_index = 3 * component + 2
-    width = np.where(usable & _measured(fit_res, width_index), params[:, :, width_index], np.nan)
+    width = np.where(usable, params[:, :, width_index], np.nan)
     return velocity, width
 
 
@@ -388,10 +371,10 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, 
     axes.set_ylabel(labels[1])
     figure.suptitle(f'{title}\n{subtitle}', fontsize=11)
     figure.text(0.995, 0.005, f"eismaps {version('eismaps')}, eispac {version('eispac')}",
-                ha='right', va='bottom', fontsize=5, color='0.4')
+                ha='right', va='bottom', fontsize=7, color='0.55')
     ratio = _map_ratio(extent)
     if equal and ratio is not None and not 1.0 / MAX_MAP_RATIO <= ratio <= MAX_MAP_RATIO:
-        figure.text(0.005, 0.005, 'X and Y scales differ', ha='left', va='bottom', fontsize=6, color='0.4')
+        figure.text(0.005, 0.005, 'X and Y scales differ', ha='left', va='bottom', fontsize=7, color='0.55')
 
     canvas.draw()
     pixels = np.asarray(canvas.buffer_rgba())[:, :, :3]
