@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from eismaps.thumbnails import (MAP_AREA, fitted_maps, MAX_MAP_RATIO, _arcsec, _column_zero_point, _map_rectangle,
+from eismaps.thumbnails import (MAP_AREA, _scale, fitted_maps, MAX_MAP_RATIO, _arcsec, _column_zero_point, _map_rectangle,
                                 _one_exposure_copy, _exposure_choice, _exposure_factor, _is_done,
                                 _process, _record_path, _summed_intensity, process_raster,
                                 render_thumbnail, RasterUnavailable, thumbnail_path)
@@ -312,6 +312,8 @@ def test_tied_parameters_of_a_second_component():
 def test_colour_scale_can_ignore_pixels(tmp_path):
     image = np.full((10, 10), 0.03)
     image[0, 0] = 0.05
+    assert _scale(image[image < 0.04], 'wid')[1].vmax < 0.04
+    assert _scale(image, 'wid')[1].vmax > 0.04
     path = tmp_path / 'c.gif'
     render_thumbnail(image, (0, 1, 0, 1), ('x', 'y'), 't', 's', 'wid', str(path), scale_pixels=image < 0.04)
     assert path.exists()
