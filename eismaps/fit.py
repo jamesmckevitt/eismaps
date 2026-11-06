@@ -265,8 +265,8 @@ def batch(files, lines_to_fit='all', ncpu='max', filter_chi2=None, save=True, ou
                 try:
                     line_label = change_line_format(wininfo[iwin]['line_id'])
                 except ValueError:
-                    print(f"Skipping window {iwin}: its title '{wininfo[iwin]['line_id']}' does not name a line.")
-                    continue
+                    # A title that is not a line, such as 'Fe IX_XI 188.350'.
+                    line_label = os.path.basename(str(template_to_fit)).split('.')[0]
 
                 if skip_done and save and output_dir is not None:
                     resolved_dir = _resolve_output_dir(file, output_dir, output_dir_tree)

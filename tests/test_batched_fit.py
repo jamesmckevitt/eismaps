@@ -95,6 +95,16 @@ def test_tied_widths_stay_equal():
     assert result['perror'][0, 5] == 0
 
 
+def test_nan_at_an_unused_point_does_not_spoil_the_fit():
+    template, parinfo = template_and_parinfo()
+    wave, inten, errs = spectra([800.0], [195.119], [0.03])
+    inten[0, 2] = np.nan
+    errs[0, 2] = np.nan
+    result = fit_spectra(wave, inten, errs, template, parinfo, tolerance=1e-10)
+    assert result['status'][0] > 0
+    assert result['params'][0, 0] == pytest.approx(800.0, rel=1e-3)
+
+
 def test_blocks_do_not_change_the_result():
     template, parinfo = template_and_parinfo()
     n = 50

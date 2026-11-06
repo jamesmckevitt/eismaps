@@ -21,7 +21,6 @@ import re
 import tempfile
 import time
 import traceback
-import warnings
 from importlib.metadata import version
 
 import eispac
@@ -35,7 +34,7 @@ from PIL import Image
 
 from eismaps.archive import RasterUnavailable, fetch_raster, list_rasters
 from eismaps.batched_fit import cube_arrays, fit_cube
-from eismaps.calibration import calibration_factor
+from eismaps.calibration import CALIBRATION_METHODS, calibration_factor
 from eismaps.windows import choose_fit, parse_title
 
 CC = 2.9979E+5  # speed of light in km/s
@@ -52,8 +51,19 @@ MIN_PEAK_SNR = 3.0
 # Pixels need this fraction of good points to have a summed intensity.
 MIN_GOOD_FRACTION = 0.5
 
+# Fewest pixels of a raster column for its own median velocity.
+MIN_COLUMN_PIXELS = 5
+
 # Range of the symmetric velocity colour scale in km/s.
 VELOCITY_SCALE_LIMITS = (10.0, 60.0)
+
+
+def _timestamp(name):
+    """Return the 'YYYYMMDD_HHMMSS' in a file name or string."""
+    match = re.search(r'(\d{8}_\d{6})', os.path.basename(name))
+    if match is None:
+        raise ValueError(f'No raster time in {name}')
+    return match.group(1)
 
 
 def thumbnail_path(root, timestamp, iwin, title, measurement):
@@ -79,25 +89,36 @@ def thumbnail_path(root, timestamp, iwin, title, measurement):
 
 
 def _exposure_choice(data_file):
-    """Return the exposure set to use and the factor for its intensity.
+    """Return the exposure set to use and the exposure time of the calibration.
 
-    The header calibration of a raster with several exposures per position
-    uses the median exposure time. The longest exposure is used, scaled to
-    that time.
+    The calibration in the header holds one exposure time, the median of the
+    exposures of a position. The longest exposure of a position is used, as
+    it has the most signal.
 
     Returns
     -------
     tuple
         Index of the exposure set, or None for one exposure per position,
-        and the intensity factor.
+        and the exposure time of the calibration in seconds, or None if no
+        exposure has a duration.
     """
     with h5py.File(data_file.replace('.data.h5', '.head.h5'), 'r') as head:
         durations = np.atleast_2d(np.array(head['exposure_times/duration'], dtype=float))
-    if durations.shape[0] < 2:
-        return None, 1.0
     medians = np.array([np.median(d[d > 0]) if (d > 0).any() else 0.0 for d in durations])
-    longest = int(np.argmax(medians))
-    return longest, float(np.sort(medians)[medians.size // 2] / medians[longest])
+    reference = float(np.sort(medians)[medians.size // 2])
+    longest = int(np.argmax(medians)) if durations.shape[0] > 1 else None
+    return longest, reference if reference > 0 else None
+
+
+def _exposure_factor(cube, reference):
+    """Return the intensity factor of each raster column for its own exposure time.
+
+    Exposure times can change within a raster, for example during a flare.
+    """
+    duration = np.asarray(cube.meta['duration'], dtype=float)
+    if reference is None or duration.size != cube.data.shape[1]:
+        return np.ones(cube.data.shape[1])
+    return np.where(duration > 0, reference / np.where(duration > 0, duration, 1.0), np.nan)
 
 
 def _read_cube(data_file, iwin, exposure):
@@ -112,8 +133,10 @@ def _summed_intensity(wave, inten, errs):
     """Return the intensity of each pixel summed over the window, in erg / (cm2 s sr)."""
     good = errs > 0
     step = float(np.median(np.abs(np.diff(wave, axis=-1))))
+    fraction = good.mean(axis=-1)
     summed = np.where(good, inten, 0.0).sum(axis=-1) * step
-    return np.where(good.mean(axis=-1) >= MIN_GOOD_FRACTION, summed, np.nan)
+    # Missing points are taken to have the mean of the others.
+    return np.where(fraction >= MIN_GOOD_FRACTION, summed / np.maximum(fraction, MIN_GOOD_FRACTION), np.nan)
 
 
 def _mean_spectrum(wave, inten, errs):
@@ -146,6 +169,21 @@ def _measured(fit_res, index):
     return measured
 
 
+def _column_zero_point(velocity):
+    """Return the median velocity of each raster column.
+
+    Columns with few pixels take their value from the neighbouring columns,
+    as the median of a few pixels would remove their real velocity.
+    """
+    enough = np.isfinite(velocity).sum(axis=0) >= MIN_COLUMN_PIXELS
+    if not enough.any():
+        values = velocity[np.isfinite(velocity)]
+        return np.full(velocity.shape[1], np.median(values) if values.size else 0.0)
+    medians = np.nanmedian(velocity[:, enough], axis=0)
+    columns = np.arange(velocity.shape[1])
+    return np.interp(columns, columns[enough], medians)
+
+
 def fitted_maps(fit_res, component):
     """Return velocity and width maps of one component.
 
@@ -174,10 +212,7 @@ def fitted_maps(fit_res, component):
     rest = float(fit_res.parinfo[centroid_index]['value'])
     velocity = CC * (params[:, :, centroid_index] - rest) / rest
     velocity = np.where(usable & _measured(fit_res, centroid_index), velocity, np.nan)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', RuntimeWarning)
-        column_median = np.nanmedian(velocity, axis=0)
-    velocity = velocity - column_median[None, :]
+    velocity = velocity - _column_zero_point(velocity)[None, :]
 
     width_index = 3 * component + 2
     width = np.where(usable & _measured(fit_res, width_index), params[:, :, width_index], np.nan)
@@ -197,28 +232,33 @@ def _axes(cube):
         the columns run backwards in time and must be reversed.
     """
     n_y, n_x = cube.data.shape[:2]
-    columns, rows = np.array([0, n_x - 1]), np.array([0, n_y - 1])
     names = cube.wcs.world_axis_physical_types
     longitude = [i for i, n in enumerate(names) if 'lon' in str(n)][0]
     latitude = [i for i, n in enumerate(names) if 'lat' in str(n)][0]
-    world_x = cube.wcs.pixel_to_world_values(np.zeros(2), columns, np.zeros(2))[longitude] * 3600.0
-    world_y = cube.wcs.pixel_to_world_values(np.zeros(2), np.zeros(2), rows)[latitude] * 3600.0
-    world_x = np.where(world_x > 648000.0, world_x - 1296000.0, world_x)
-    world_y = np.where(world_y > 648000.0, world_y - 1296000.0, world_y)
-    half_y = 0.5 * (world_y[1] - world_y[0]) / max(n_y - 1, 1)
-    bottom, top = world_y[0] - half_y, world_y[1] + half_y
+
+    def arcsec(world):
+        world = world * 3600.0
+        return np.where(world > 648000.0, world - 1296000.0, world)
+
+    # Pixel 1 gives the pixel size, and exists in the WCS for one column or row.
+    columns = np.array([0, 1, n_x - 1])
+    rows = np.array([0, 1, n_y - 1])
+    world_x = arcsec(cube.wcs.pixel_to_world_values(np.zeros(3), columns, np.zeros(3))[longitude])
+    world_y = arcsec(cube.wcs.pixel_to_world_values(np.zeros(3), np.zeros(3), rows)[latitude])
+    half_x = 0.5 * (world_x[1] - world_x[0])
+    half_y = 0.5 * (world_y[1] - world_y[0])
+    bottom, top = world_y[0] - half_y, world_y[2] + half_y
     y_label = 'Solar-Y (arcsec)'
 
     if cube.meta['mod_index'].get('obs_type') == 'sit-and-stare':
         times = np.array(cube.meta['date_obs'], dtype='datetime64[ms]')
         minutes = (times - times.min()) / np.timedelta64(60, 's')
         reverse = minutes[0] > minutes[-1]
-        span = float(minutes.max()) if n_x > 1 else 1.0
-        half_t = 0.5 * span / max(n_x - 1, 1)
+        span = float(minutes.max())
+        half_t = 0.5 * span / (n_x - 1) if n_x > 1 and span > 0 else 0.5
         return (-half_t, span + half_t, bottom, top), 'Time since first exposure (minutes)', y_label, bool(reverse)
 
-    half_x = 0.5 * (world_x[1] - world_x[0]) / max(n_x - 1, 1)
-    return (world_x[0] - half_x, world_x[1] + half_x, bottom, top), 'Solar-X (arcsec)', y_label, False
+    return (world_x[0] - half_x, world_x[2] + half_x, bottom, top), 'Solar-X (arcsec)', y_label, False
 
 
 def _scale(image, measurement):
@@ -279,12 +319,16 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path):
     Image.fromarray(pixels).quantize(colors=256, dither=Image.Dither.NONE).save(path, format='GIF')
 
 
-def _calibration(date, wavelength, method):
-    """Return the calibration factor, or 1 where a wavelength has no calibration."""
-    try:
-        return calibration_factor(date, wavelength, method)
-    except (ValueError, IndexError):
-        return 1.0
+def _calibration(date, wavelengths, method):
+    """Return the calibration factor at the first wavelength that has one, or None."""
+    for wavelength in wavelengths:
+        if wavelength is None:
+            continue
+        try:
+            return calibration_factor(date, wavelength, method)
+        except (ValueError, IndexError):
+            continue
+    return None
 
 
 def make_thumbnails(data_file, output_root, calibration='del_zanna_2025'):
@@ -306,11 +350,13 @@ def make_thumbnails(data_file, output_root, calibration='del_zanna_2025'):
         Record of the raster: exposure used, and for each window its title,
         fit and thumbnails, or the error if a window failed.
     """
-    timestamp = re.search(r'eis_(\d{8}_\d{6})', os.path.basename(data_file)).group(1)
+    if calibration not in CALIBRATION_METHODS:
+        raise ValueError(f'Unknown calibration method: {calibration}. Choose from {sorted(CALIBRATION_METHODS)}')
+    timestamp = _timestamp(data_file)
     wininfo = eispac.read_wininfo(data_file)
-    exposure, exposure_factor = _exposure_choice(data_file)
+    exposure, reference_exposure = _exposure_choice(data_file)
     date = f'{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}T{timestamp[9:11]}:{timestamp[11:13]}:{timestamp[13:15]}'
-    record = {'timestamp': timestamp, 'exposure_set': exposure, 'exposure_factor': exposure_factor,
+    record = {'timestamp': timestamp, 'exposure_set': exposure, 'reference_exposure': reference_exposure,
               'calibration': calibration, 'windows': []}
 
     for row in wininfo:
@@ -326,12 +372,17 @@ def make_thumbnails(data_file, output_root, calibration='del_zanna_2025'):
             labels = (x_label, y_label)
             heading = f'{title.strip()} [{low:.2f}-{high:.2f} $\\AA$]'
 
-            fit = choose_fit(title, low, high, *_mean_spectrum(wave, inten, errs))
+            fit = None
+            try:
+                fit = choose_fit(title, low, high, *_mean_spectrum(wave, inten, errs))
+            except Exception:
+                entry['fit_error'] = traceback.format_exc(limit=3)
             line_wave = parse_title(fit.line)[1] if fit else parse_title(title)[1]
-            factor = _calibration(date, line_wave or 0.5 * (low + high), calibration)
+            factor = _calibration(date, (line_wave, 0.5 * (low + high)), calibration)
             entry['calibration_factor'] = factor
 
-            intensity = _summed_intensity(wave, inten, errs) * exposure_factor * factor
+            intensity = _summed_intensity(wave, inten, errs) * _exposure_factor(cube, reference_exposure)[None, :]
+            intensity = intensity * (1.0 if factor is None else factor)
             path = thumbnail_path(output_root, timestamp, iwin, title, 'int')
             render_thumbnail(intensity[:, order], extent, labels, f'Intensity - {heading}', date, 'int', path)
             entry['files'].append(os.path.basename(path))
@@ -357,7 +408,7 @@ def make_thumbnails(data_file, output_root, calibration='del_zanna_2025'):
     return record
 
 
-def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='del_zanna_2025', keep_files=False):
+def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='del_zanna_2025'):
     """Fetch a raster if needed, make its thumbnails and write its record.
 
     Parameters
@@ -370,34 +421,49 @@ def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='d
         Directory for downloads. A temporary directory by default.
     calibration : str, default='del_zanna_2025'
         Calibration of the intensities.
-    keep_files : bool, default=False
-        Keep downloaded files.
 
     Returns
     -------
     dict
         Record of the raster, also written as `<level 0 file>.json` beside
-        the thumbnails. An unavailable raster has `error` set.
+        the thumbnails. A raster that could not be processed has `error` set.
     """
     started = time.perf_counter()
     local = os.path.exists(timestamp_or_file)
-    timestamp = re.search(r'(\d{8}_\d{6})', os.path.basename(timestamp_or_file)).group(1)
-    directory = os.path.dirname(thumbnail_path(output_root, timestamp, 0, 'x', 'int'))
-    os.makedirs(directory, exist_ok=True)
+    timestamp = _timestamp(timestamp_or_file)
+    if work_dir is not None:
+        os.makedirs(work_dir, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=work_dir) as temporary:
         try:
             data_file = timestamp_or_file if local else fetch_raster(timestamp, temporary)
             record = make_thumbnails(data_file, output_root, calibration)
         except RasterUnavailable as error:
             record = {'timestamp': timestamp, 'error': str(error)}
-        if keep_files and not local and 'error' not in record:
-            for kind in ('data', 'head'):
-                name = f'eis_{timestamp}.{kind}.h5'
-                os.replace(os.path.join(temporary, name), os.path.join(work_dir or '.', name))
+        except Exception:
+            record = {'timestamp': timestamp, 'error': traceback.format_exc(limit=3)}
     record['seconds'] = round(time.perf_counter() - started, 1)
-    with open(os.path.join(directory, f'eis_l0_{timestamp}.fits.json'), 'w') as output:
+    path = _record_path(output_root, timestamp)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as output:
         json.dump(record, output, indent=1)
     return record
+
+
+def _record_path(output_root, timestamp):
+    """Return the path of a raster's record."""
+    folder = os.path.dirname(thumbnail_path(output_root, timestamp, 0, 'x', 'int'))
+    return os.path.join(folder, f'eis_l0_{timestamp}.fits.json')
+
+
+def _is_done(output_root, raster):
+    """Return True if a raster has a record with no errors."""
+    path = _record_path(output_root, _timestamp(raster))
+    try:
+        with open(path) as stored:
+            record = json.load(stored)
+    except (OSError, ValueError):
+        return False
+    return 'error' not in record and not any('error' in w for w in record['windows'])
 
 
 def _process(arguments):
@@ -412,19 +478,16 @@ def main(argv=None):
     parser.add_argument('--output', required=True, help='Top directory of the thumbnails')
     parser.add_argument('--work', default=None, help='Directory for downloads')
     parser.add_argument('--processes', type=int, default=1, help='Rasters to process at once')
-    parser.add_argument('--calibration', default='del_zanna_2025', help='Intensity calibration')
-    parser.add_argument('--overwrite', action='store_true', help='Remake rasters that have a record')
+    parser.add_argument('--calibration', default='del_zanna_2025', choices=CALIBRATION_METHODS,
+                        help='Intensity calibration')
+    parser.add_argument('--overwrite', action='store_true', help='Remake rasters done without errors')
     args = parser.parse_args(argv)
 
     rasters = list(args.rasters)
     for date in args.date:
         rasters.extend(list_rasters(date))
     if not args.overwrite:
-        def done(raster):
-            timestamp = re.search(r'(\d{8}_\d{6})', os.path.basename(raster)).group(1)
-            folder = os.path.dirname(thumbnail_path(args.output, timestamp, 0, 'x', 'int'))
-            return os.path.exists(os.path.join(folder, f'eis_l0_{timestamp}.fits.json'))
-        rasters = [r for r in rasters if not done(r)]
+        rasters = [r for r in rasters if not _is_done(args.output, r)]
 
     jobs = [(r, args.output, args.work, args.calibration) for r in rasters]
     with multiprocessing.Pool(args.processes) as pool:
