@@ -149,12 +149,12 @@ def _read_single_position(data_file, iwin, exposure):
     """Read one exposure of a raster with several exposures at a single position.
 
     EISPAC computes a cadence for these from one time, which gives NaN and
-    fails. A copy of the header with one exposure avoids this.
+    fails. A copy of the files with one exposure in the header avoids this.
+    EISPAC follows links, so the data file is copied too. These files are
+    small.
     """
     with tempfile.TemporaryDirectory() as temporary:
-        name = os.path.basename(data_file)
-        copied = os.path.join(temporary, name)
-        os.symlink(os.path.abspath(data_file), copied)
+        copied = shutil.copy(data_file, temporary)
         head = copied.replace('.data.h5', '.head.h5')
         shutil.copy(data_file.replace('.data.h5', '.head.h5'), head)
         with h5py.File(head, 'r+') as header:
