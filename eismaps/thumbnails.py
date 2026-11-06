@@ -19,6 +19,7 @@ import multiprocessing
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 import traceback
@@ -102,15 +103,17 @@ def _exposure_choice(data_file):
     -------
     tuple
         Index of the exposure set, or None for one exposure per position,
-        and the exposure time of the calibration in seconds, or None if no
-        exposure has a duration.
+        the exposure time of the calibration in seconds, or None if no
+        exposure has a duration, and True for several exposures at a single
+        position.
     """
     with h5py.File(data_file.replace('.data.h5', '.head.h5'), 'r') as head:
         durations = np.atleast_2d(np.array(head['exposure_times/duration'], dtype=float))
     medians = np.array([np.median(d[d > 0]) if (d > 0).any() else 0.0 for d in durations])
     reference = float(np.sort(medians)[medians.size // 2])
-    longest = int(np.argmax(medians)) if durations.shape[0] > 1 else None
-    return longest, reference if reference > 0 else None
+    several = durations.shape[0] > 1
+    longest = int(np.argmax(medians)) if several else None
+    return longest, reference if reference > 0 else None, several and durations.shape[1] == 1
 
 
 def _exposure_factor(cube, reference):
@@ -138,28 +141,26 @@ def _read_cube(data_file, iwin, exposure):
             cube = eispac.read_cube(data_file, iwin)
         else:
             cube = eispac.read_cube(data_file, iwin, exp_set=exposure)
-            if cube is None:
-                cube = _read_single_position(data_file, iwin, exposure)
     if cube is None:
         raise ValueError(f'EISPAC could not read window {iwin}: {messages.getvalue()[-200:]}')
     return cube
 
 
-def _read_single_position(data_file, iwin, exposure):
-    """Read one exposure of a raster with several exposures at a single position.
+def _one_exposure_copy(data_file, directory):
+    """Return a file to read a raster with several exposures at a single position.
 
     EISPAC computes a cadence for these from one time, which gives NaN and
-    fails. A copy of the files with one exposure in the header avoids this.
-    EISPAC follows links, so the data file is copied too. These files are
-    small.
+    fails. Reading a copy of the header that has one exposure avoids this. The
+    data file is linked beside it, and EISPAC is given the header, as it
+    would follow a link given to it.
     """
-    with tempfile.TemporaryDirectory() as temporary:
-        copied = shutil.copy(data_file, temporary)
-        head = copied.replace('.data.h5', '.head.h5')
-        shutil.copy(data_file.replace('.data.h5', '.head.h5'), head)
-        with h5py.File(head, 'r+') as header:
-            header['index/nexp'][...] = 1
-        return eispac.read_cube(copied, iwin, exp_set=exposure)
+    stem = os.path.basename(data_file).replace('.data.h5', '')
+    head = os.path.join(directory, f'{stem}.head.h5')
+    shutil.copyfile(data_file.replace('.data.h5', '.head.h5'), head)
+    os.symlink(os.path.abspath(data_file), os.path.join(directory, f'{stem}.data.h5'))
+    with h5py.File(head, 'r+') as header:
+        header['index/nexp'][...] = 1
+    return head
 
 
 def _summed_intensity(wave, inten, errs):
@@ -389,9 +390,18 @@ def make_thumbnails(data_file, output_root, calibration='del_zanna_2025'):
     """
     if calibration not in CALIBRATION_METHODS:
         raise ValueError(f'Unknown calibration method: {calibration}. Choose from {sorted(CALIBRATION_METHODS)}')
+    exposure, reference_exposure, single_position = _exposure_choice(data_file)
+    if single_position:
+        with tempfile.TemporaryDirectory() as temporary:
+            copy = _one_exposure_copy(data_file, temporary)
+            return _raster_thumbnails(copy, output_root, calibration, exposure, reference_exposure)
+    return _raster_thumbnails(data_file, output_root, calibration, exposure, reference_exposure)
+
+
+def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_exposure):
+    """Make the thumbnails of a raster with a chosen exposure set, returning its record."""
     timestamp = _timestamp(data_file)
     wininfo = eispac.read_wininfo(data_file)
-    exposure, reference_exposure = _exposure_choice(data_file)
     date = f'{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}T{timestamp[9:11]}:{timestamp[11:13]}:{timestamp[13:15]}'
     record = {'timestamp': timestamp, 'exposure_set': exposure, 'reference_exposure': reference_exposure,
               'calibration': calibration, 'windows': []}
@@ -532,8 +542,13 @@ def main(argv=None):
     if args.work is not None:
         os.makedirs(args.work, exist_ok=True)
     rasters = list(args.rasters)
+    failed_dates = []
     for date in args.date:
-        rasters.extend(list_rasters(date))
+        try:
+            rasters.extend(list_rasters(date))
+        except ConnectionError as error:
+            print(error, flush=True)
+            failed_dates.append(date)
     if not args.overwrite:
         rasters = [r for r in rasters if not _is_done(args.output, r)]
 
@@ -542,6 +557,8 @@ def main(argv=None):
         for record in pool.imap_unordered(_process, jobs):
             failed = sum(_window_failed(w) for w in record.get('windows', []))
             print(record['timestamp'], f"{record['seconds']} s", record.get('error', f'{failed} windows failed'), flush=True)
+    if failed_dates:
+        sys.exit(f'No listing for {failed_dates}')
 
 
 if __name__ == '__main__':

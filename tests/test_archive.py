@@ -38,6 +38,18 @@ def test_outage_is_not_an_empty_day(monkeypatch):
         archive.list_rasters('2013-01-16')
 
 
+def test_one_server_down_is_an_outage(monkeypatch):
+    # A 404 from one server says nothing about a day the other could not list.
+    def urlopen(url, timeout):
+        if 'mssl' in url:
+            raise urllib.error.HTTPError(url, 404, 'error', None, None)
+        raise urllib.error.URLError('timed out')
+
+    monkeypatch.setattr('urllib.request.urlopen', urlopen)
+    with pytest.raises(ConnectionError):
+        archive.list_rasters('2013-01-16')
+
+
 def test_truncated_file_is_refused_and_the_next_server_used(tmp_path, monkeypatch):
     good = tmp_path / 'good.h5'
     with h5py.File(good, 'w') as f:

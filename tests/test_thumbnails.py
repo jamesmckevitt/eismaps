@@ -7,7 +7,7 @@ import h5py
 import numpy as np
 from PIL import Image
 
-from eismaps.thumbnails import (_arcsec, _column_zero_point, _exposure_choice, _exposure_factor, _is_done,
+from eismaps.thumbnails import (_arcsec, _column_zero_point, _one_exposure_copy, _exposure_choice, _exposure_factor, _is_done,
                                 _process, _record_path, _summed_intensity, process_raster,
                                 render_thumbnail, RasterUnavailable, thumbnail_path)
 
@@ -34,21 +34,46 @@ def write_durations(tmp_path, durations):
 
 
 def test_one_exposure_needs_no_choice(tmp_path):
-    assert _exposure_choice(write_durations(tmp_path, [[30.0] * 5])) == (None, 30.0)
+    assert _exposure_choice(write_durations(tmp_path, [[30.0] * 5])) == (None, 30.0, False)
 
 
 def test_longest_exposure_is_chosen_and_the_median_is_the_reference(tmp_path):
     # The calibration in the header is for 50 s here, the median of 50, 5 and 655 s.
-    assert _exposure_choice(write_durations(tmp_path, [[50.0] * 4, [5.0] * 4, [655.0] * 4])) == (2, 50.0)
+    assert _exposure_choice(write_durations(tmp_path, [[50.0] * 4, [5.0] * 4, [655.0] * 4])) == (2, 50.0, False)
 
 
 def test_two_exposures_use_the_longer_as_reference(tmp_path):
     # The calibration in the header is for the longer of two exposures.
-    assert _exposure_choice(write_durations(tmp_path, [[30.0] * 4, [90.0] * 4])) == (1, 90.0)
+    assert _exposure_choice(write_durations(tmp_path, [[30.0] * 4, [90.0] * 4])) == (1, 90.0, False)
 
 
 def test_no_durations_give_no_reference(tmp_path):
     assert _exposure_choice(write_durations(tmp_path, [[0.0] * 4]))[1] is None
+
+
+def test_single_position_is_flagged(tmp_path):
+    assert _exposure_choice(write_durations(tmp_path, [[30.0], [90.0]])) == (1, 90.0, True)
+
+
+def test_one_exposure_copy_changes_only_the_copy(tmp_path):
+    source = tmp_path / 'source'
+    source.mkdir()
+    data = source / 'eis_20070315_111949.data.h5'
+    with h5py.File(data, 'w') as f:
+        f['x'] = [1]
+    head = source / 'eis_20070315_111949.head.h5'
+    with h5py.File(head, 'w') as f:
+        f['index/nexp'] = [2]
+    head.chmod(0o444)
+    copy = tmp_path / 'copy'
+    copy.mkdir()
+    path = _one_exposure_copy(str(data), str(copy))
+    assert path.endswith('.head.h5')
+    with h5py.File(path, 'r') as f:
+        assert f['index/nexp'][0] == 1
+    with h5py.File(head, 'r') as f:
+        assert f['index/nexp'][0] == 2
+    assert (copy / 'eis_20070315_111949.data.h5').is_symlink()
 
 
 class FakeCube:
