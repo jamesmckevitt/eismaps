@@ -45,6 +45,7 @@ from eismaps import (
     make_carrington_map,
     make_helioprojective_map,
     make_maps,
+    make_thumbnails,
 )
 ```
 
@@ -175,6 +176,52 @@ fd_chi2 = extras['chi2']
 - by default a NaN raster pixel makes every output pixel it overlaps NaN, as in `reproject_exact`. `skip_nan=True` leaves NaN pixels out, so each output pixel averages the valid pixels it overlaps (needs `algorithm='exact'`).
 
 `make_carrington_map()` makes a Carrington map instead of a helioprojective one.
+
+### SolarB Thumbnails
+
+`make_thumbnails()` makes the quicklook images of a raster for the [MSSL SolarB archive](https://solarb.mssl.ucl.ac.uk/SolarB/). It writes one GIF per spectral window and quantity, using the archive's directory layout and file names:
+
+```text
+YYYY/MM/DD/eis_l0_<time>.fits/eis_l0_<time>.fits_line_NN_<title>.<int|vel|wid>.gif
+```
+
+The quantities are:
+
+- `int`: the window summed over wavelength, for every window. Intensities use the Del Zanna (2025) calibration by default.
+- `vel`: Doppler velocity from a Gaussian fit, relative to the median of each raster column.
+- `wid`: Gaussian width from the same fit.
+
+The line to fit is chosen from the window title. A single Gaussian is used unless a check on the window's mean spectrum shows that a neighbouring line changes the result, when the smallest EISPAC multi-component template with that line is used. Pixels with a peak below 3 times its error, or a parameter on a template limit, are grey. Full-CCD windows get `int` only.
+
+For a raster with several exposures per position, the longest exposure is used. For a sit-and-stare observation, the X axis is time.
+
+From Python, for a raster already on disk:
+
+```python
+from eismaps import make_thumbnails
+
+record = make_thumbnails('eis_20130116_093720.data.h5', 'thumbnails')
+```
+
+From the command line, for rasters by time, for whole days, or for files:
+
+```bash
+eismaps-solarb-thumbnails 20130116_093720 --output thumbnails
+eismaps-solarb-thumbnails --date 2013-01-16 --output thumbnails --processes 8
+```
+
+Files are downloaded from the MSSL mirror, or from NRL if the mirror has no complete copy, and deleted afterwards. A JSON file beside each raster's thumbnails records the fit used for each window. Rasters with such a file are skipped unless `--overwrite` is given. Only rasters with level 1 HDF5 files can be processed, which leaves out the 40 and 266 arcsec slot observations.
+
+The fits use `eismaps.batched_fit`, which fits all the spectra of a window together and is much faster than EISPAC's `fit_spectra`. It takes the same template and returns an EISPAC fit result:
+
+```python
+import eispac
+from eismaps.batched_fit import fit_cube
+
+cube = eispac.read_cube('eis_20130116_093720.data.h5', 195.119)
+template = eispac.read_template(eispac.data.get_fit_template_filepath('fe_12_195_119.1c.template.h5'))
+fit_result = fit_cube(cube, template.template, template.parinfo)
+```
 
 ## Typical API Flow
 

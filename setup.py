@@ -28,7 +28,11 @@ setup(
     },
     install_requires=[
         'eispac>=0.99.3',
+        'h5py',
+        'matplotlib',
         'numpy>=1.24',
+        'pillow',
+        'scipy',
         'sunkit-image>=0.5.1',
     ],
     python_requires='>=3.9',
@@ -42,6 +46,7 @@ setup(
     entry_points={
         'console_scripts': [
             'eismaps-sync-calibration=eismaps.calibration:sync_solarsoft_calibration_data_cli',
+            'eismaps-solarb-thumbnails=eismaps.thumbnails:main',
         ],
     },
 )
