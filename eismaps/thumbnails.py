@@ -18,6 +18,7 @@ import json
 import multiprocessing
 import os
 import re
+import shutil
 import tempfile
 import time
 import traceback
@@ -129,18 +130,36 @@ def _read_cube(data_file, iwin, exposure):
     Raises
     ------
     ValueError
-        If EISPAC cannot read the window, as for one position with several
-        exposures.
+        If EISPAC cannot read the window.
     """
     messages = io.StringIO()
-    with contextlib.redirect_stdout(messages):
+    with contextlib.redirect_stdout(messages), contextlib.redirect_stderr(messages):
         if exposure is None:
             cube = eispac.read_cube(data_file, iwin)
         else:
             cube = eispac.read_cube(data_file, iwin, exp_set=exposure)
+            if cube is None:
+                cube = _read_single_position(data_file, iwin, exposure)
     if cube is None:
         raise ValueError(f'EISPAC could not read window {iwin}: {messages.getvalue()[-200:]}')
     return cube
+
+
+def _read_single_position(data_file, iwin, exposure):
+    """Read one exposure of a raster with several exposures at a single position.
+
+    EISPAC computes a cadence for these from one time, which gives NaN and
+    fails. A copy of the header with one exposure avoids this.
+    """
+    with tempfile.TemporaryDirectory() as temporary:
+        name = os.path.basename(data_file)
+        copied = os.path.join(temporary, name)
+        os.symlink(os.path.abspath(data_file), copied)
+        head = copied.replace('.data.h5', '.head.h5')
+        shutil.copy(data_file.replace('.data.h5', '.head.h5'), head)
+        with h5py.File(head, 'r+') as header:
+            header['index/nexp'][...] = 1
+        return eispac.read_cube(copied, iwin, exp_set=exposure)
 
 
 def _summed_intensity(wave, inten, errs):

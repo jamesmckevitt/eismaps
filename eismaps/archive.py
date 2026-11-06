@@ -36,16 +36,29 @@ def list_rasters(date):
     -------
     list[str]
         Sorted timestamps such as '20130116_093720'.
+
+    Raises
+    ------
+    ConnectionError
+        If no server answers, so that an outage is not taken for an empty day.
     """
     day = date.replace('-', '')
     found = set()
+    answered = False
     for server in SERVERS:
         try:
             with urllib.request.urlopen(f'{server}/{_day_path(day)}/', timeout=TIMEOUT) as response:
                 listing = response.read().decode('utf-8', 'replace')
+        except urllib.error.HTTPError as error:
+            # A day with no observations has no directory.
+            answered = answered or error.code == 404
+            continue
         except (urllib.error.URLError, OSError):
             continue
+        answered = True
         found.update(re.findall(r'eis_(\d{8}_\d{6})\.data\.h5', listing))
+    if not answered:
+        raise ConnectionError(f'No server answered for {date}')
     return sorted(found)
 
 
