@@ -242,30 +242,79 @@ def test_time_axis_fills_the_area():
     assert _map_rectangle((0, 8, -100, 200), False) == MAP_AREA
 
 
-class FakeFit:
-    """Fit of 40 spectra in one column: a line on its width limit, and a pixel with no line."""
+CENTROID_LIMITS = {'value': 195.119, 'limited': [1, 1], 'limits': [195.04, 195.2]}
+WIDTH_LIMITS = {'limited': [1, 1], 'limits': [0.019, 0.05]}
 
-    def __init__(self):
-        params = np.tile([100.0, 195.119, 0.03, 10.0], (40, 1, 1))
-        perror = np.tile([5.0, 0.002, 0.002, 1.0], (40, 1, 1))
-        params[0, 0, 2] = 0.05
-        perror[0, 0, 2] = 0.0
-        params[1, 0, 1] = 195.2
-        perror[1, 0, 1] = 0.0
-        params[2, 0, 0] = 1.0
-        self.fit = {'params': params, 'perror': perror, 'status': np.ones((40, 1)), 'chi2': np.ones((40, 1))}
-        self.parinfo = [{}, {'value': 195.119}, {}, {}]
+
+class FakeFit:
+    """Fit of `rows` spectra in one column, with a line at 195.13 A."""
+
+    def __init__(self, rows=40):
+        params = np.tile([100.0, 195.13, 0.03, 10.0], (rows, 1, 1))
+        perror = np.tile([5.0, 0.002, 0.002, 1.0], (rows, 1, 1))
+        self.fit = {'params': params, 'perror': perror, 'status': np.ones((rows, 1)), 'chi2': np.ones((rows, 1))}
+        self.parinfo = [{}, dict(CENTROID_LIMITS), dict(WIDTH_LIMITS), {}]
 
 
 def test_values_on_template_limits_are_shown():
-    velocity, width = fitted_maps(FakeFit(), 0)
+    fit = FakeFit()
+    fit.fit['params'][0, 0, 2] = 0.05
+    fit.fit['perror'][0, 0, 2] = 0.0
+    fit.fit['params'][1, 0, 1] = 195.2
+    fit.fit['perror'][1, 0, 1] = 0.0
+    velocity, width, velocity_off_limit, width_off_limit = fitted_maps(fit, 0)
     assert width[0, 0] == 0.05
-    assert velocity[1, 0] == pytest.approx(124.5, abs=0.1)
+    assert velocity[1, 0] == pytest.approx(107.6, abs=0.2)
+    assert not width_off_limit[0, 0] and not velocity_off_limit[1, 0]
 
 
 def test_weak_peak_is_blank():
-    velocity, width = fitted_maps(FakeFit(), 0)
+    fit = FakeFit()
+    fit.fit['params'][2, 0, 0] = 1.0
+    velocity, width = fitted_maps(fit, 0)[:2]
     assert np.isnan(velocity[2, 0]) and np.isnan(width[2, 0])
+
+
+def test_unconstrained_parameter_is_blank():
+    # A zero error off the limits means the fit did not constrain the parameter.
+    fit = FakeFit()
+    fit.fit['perror'][3, 0, 1] = 0.0
+    fit.fit['perror'][3, 0, 2] = 0.0
+    velocity, width = fitted_maps(fit, 0)[:2]
+    assert np.isnan(velocity[3, 0]) and np.isnan(width[3, 0])
+
+
+def test_zero_point_ignores_pixels_on_a_limit():
+    # Most of the column on the limit must not set its zero point.
+    fit = FakeFit()
+    fit.fit['params'][:25, 0, 1] = 195.2
+    fit.fit['perror'][:25, 0, 1] = 0.0
+    velocity = fitted_maps(fit, 0)[0]
+    assert velocity[30, 0] == pytest.approx(0.0, abs=1e-6)
+    assert velocity[0, 0] == pytest.approx((195.2 - 195.13) / 195.119 * 2.9979e5, rel=1e-3)
+
+
+def test_tied_parameters_of_a_second_component():
+    # The second Gaussian has its centroid and width tied to the first, as in fe_12_195_179.2c.
+    rows = 40
+    params = np.tile([100.0, 195.13, 0.03, 50.0, 195.19, 0.03, 10.0], (rows, 1, 1))
+    perror = np.tile([5.0, 0.002, 0.002, 4.0, 0.0, 0.0, 1.0], (rows, 1, 1))
+    fit = FakeFit()
+    fit.fit['params'], fit.fit['perror'] = params, perror
+    fit.parinfo = [{}, dict(CENTROID_LIMITS), dict(WIDTH_LIMITS), {},
+                   {'value': 195.179, 'tied': 'p[1]+0.06'}, {'tied': 'p[2]'}, {}]
+    velocity, width, velocity_off_limit, width_off_limit = fitted_maps(fit, 1)
+    assert np.isfinite(velocity).all()
+    assert (width == 0.03).all()
+    assert velocity_off_limit.all() and width_off_limit.all()
+
+
+def test_colour_scale_can_ignore_pixels(tmp_path):
+    image = np.full((10, 10), 0.03)
+    image[0, 0] = 0.05
+    path = tmp_path / 'c.gif'
+    render_thumbnail(image, (0, 1, 0, 1), ('x', 'y'), 't', 's', 'wid', str(path), scale_pixels=image < 0.04)
+    assert path.exists()
 
 
 def test_all_blank_map_still_renders(tmp_path):
