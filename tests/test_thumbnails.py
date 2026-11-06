@@ -7,7 +7,8 @@ import h5py
 import numpy as np
 from PIL import Image
 
-from eismaps.thumbnails import (_arcsec, _column_zero_point, _one_exposure_copy, _exposure_choice, _exposure_factor, _is_done,
+from eismaps.thumbnails import (MAP_AREA, MAX_MAP_RATIO, _arcsec, _column_zero_point, _map_rectangle,
+                                _one_exposure_copy, _exposure_choice, _exposure_factor, _is_done,
                                 _process, _record_path, _summed_intensity, process_raster,
                                 render_thumbnail, RasterUnavailable, thumbnail_path)
 
@@ -190,6 +191,28 @@ def test_thumbnail_is_a_768_pixel_gif(tmp_path):
     with Image.open(path) as gif:
         assert gif.format == 'GIF'
         assert gif.size == (768, 768)
+
+
+def test_equal_scales_in_x_and_y():
+    # In a square image, the sides of the map must have the ratio of the extent.
+    left, bottom, width, height = _map_rectangle((0, 200, 0, 400), True)
+    assert width / height == 0.5
+    assert height == MAP_AREA[3]
+
+
+def test_wide_map_fills_the_width():
+    left, bottom, width, height = _map_rectangle((0, 400, 0, 100), True)
+    assert width == MAP_AREA[2]
+    assert width / height == 4.0
+
+
+def test_very_narrow_map_is_stretched_to_the_limit():
+    left, bottom, width, height = _map_rectangle((0, 10, 0, 512), True)
+    assert width / height == 1 / MAX_MAP_RATIO
+
+
+def test_time_axis_fills_the_area():
+    assert _map_rectangle((0, 8, -100, 200), False) == MAP_AREA
 
 
 def test_all_blank_map_still_renders(tmp_path):
