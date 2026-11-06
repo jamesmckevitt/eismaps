@@ -439,7 +439,8 @@ def _fit_block(wave, inten, errs, template, parinfo, min_points, maxiter, tolera
 
     params[rows] = fitted
     perror[rows] = errors
-    chi2[rows] = (residuals * residuals).sum(axis=1) / (problem.n_good[rows] - problem.free.size)
+    with np.errstate(all='ignore'):
+        chi2[rows] = (residuals * residuals).sum(axis=1) / (problem.n_good[rows] - problem.free.size)
     return params, perror, chi2, status
 
 
@@ -543,7 +544,7 @@ def fit_cube(cube, template, parinfo, component=0, **kwargs):
         fit['int'][:, :, n] = np.sqrt(2 * np.pi) * peak * width
         fit['width'][:, :, n] = width
         fit['err_width'][:, :, n] = width_err
-        with np.errstate(divide='ignore', invalid='ignore'):
+        with np.errstate(all='ignore'):
             relative = np.sqrt((peak_err / peak) ** 2 + (width_err / width) ** 2)
         fit['err_int'][:, :, n] = np.where(peak > 0, fit['int'][:, :, n] * relative, 0.0)
         rest = float(parinfo[3 * n + 1]['value'])
