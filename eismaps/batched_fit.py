@@ -8,7 +8,6 @@ parameters are computed as MPFIT computes them.
 """
 
 import copy
-import warnings
 
 import numpy as np
 import scipy.linalg
@@ -386,31 +385,29 @@ def _iterate(problem, base, rows, values, damping0, maxiter, tolerance, keep_pea
 
 
 def _retry_start(problem, rows, values):
-    """Return start values for a second attempt, putting empty lines on the data.
+    """Return start values for a second attempt at fits that ended with a peak of zero.
 
-    A Gaussian with a start peak of zero is moved to the strongest point
-    within its centroid limits. This finds a line far from the template's
-    centroid, which the first attempt can miss.
+    A single Gaussian is moved to the strongest point within its centroid
+    limits, which finds a line far from the template's centroid. Fits with
+    several Gaussians keep their start values, as a Gaussian moved this way
+    could take part of a neighbouring line.
     """
-    start = values.copy()
     position = {index: i for i, index in enumerate(problem.free)}
+    peak_at, centroid_at = position.get(0), position.get(1)
+    if problem.n_gauss != 1 or peak_at is None or centroid_at is None:
+        return values
+    start = values.copy()
     wave, inten, good = problem.wave[rows], problem.inten[rows], problem.good[rows]
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', RuntimeWarning)
-        floor = np.nanmedian(np.where(good, inten, np.nan), axis=1)
+    floor = np.nanmedian(np.where(good, inten, np.nan), axis=1, keepdims=True)
+    low = problem.lower[centroid_at] if problem.has_lower[centroid_at] else -np.inf
+    high = problem.upper[centroid_at] if problem.has_upper[centroid_at] else np.inf
+    excess = np.where(good & (wave >= low) & (wave <= high), inten - floor, -np.inf)
+    strongest = np.argmax(excess, axis=1)
     lines = np.arange(rows.size)
-    for n in range(problem.n_gauss):
-        peak_at, centroid_at = position.get(3 * n), position.get(3 * n + 1)
-        if peak_at is None or centroid_at is None:
-            continue
-        low = problem.lower[centroid_at] if problem.has_lower[centroid_at] else -np.inf
-        high = problem.upper[centroid_at] if problem.has_upper[centroid_at] else np.inf
-        excess = np.where(good & (wave >= low) & (wave <= high), inten - floor[:, None], -np.inf)
-        strongest = np.argmax(excess, axis=1)
-        peak = excess[lines, strongest]
-        empty = (start[:, peak_at] <= 0) & (peak > 0)
-        start[empty, peak_at] = peak[empty]
-        start[empty, centroid_at] = wave[lines, strongest][empty]
+    peak = excess[lines, strongest]
+    found = peak > 0
+    start[found, peak_at] = peak[found]
+    start[found, centroid_at] = wave[lines, strongest][found]
     return start
 
 

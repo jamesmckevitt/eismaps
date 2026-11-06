@@ -82,13 +82,14 @@ def test_line_off_the_guess_is_not_lost():
 
 
 def test_line_beyond_the_centroid_limit_is_kept_on_the_limit():
-    # A fast flare line 0.13 A from the template centroid, past the 0.1 A limit, must not
-    # be lost as a fit with a peak of zero.
+    # A fast flare line 0.16 A from the template centroid, past the 0.1 A limit. About half of
+    # such fits first end with a peak of zero, and the second attempt must recover them.
     template, parinfo = template_and_parinfo()
-    wave, inten, errs = spectra([3000.0], [195.249], [0.04], noise=20.0)
+    n = 300
+    wave, inten, errs = spectra([3000.0] * n, [195.279] * n, [0.04] * n, noise=20.0)
     result = fit_spectra(wave, inten, errs, template, parinfo)
-    assert result['params'][0, 0] > 0
-    assert result['params'][0, 1] == pytest.approx(195.219, abs=1e-6)
+    assert (result['params'][:, 0] > 0).mean() > 0.98
+    assert np.allclose(result['params'][:, 1][result['params'][:, 0] > 0], 195.219, atol=1e-6)
 
 
 def test_tied_widths_stay_equal():
