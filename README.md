@@ -193,7 +193,7 @@ The quantities are:
 
 The line to fit is chosen from the window title. A single Gaussian is used unless a check on the window's mean spectrum shows that a neighbouring line changes the result, when the smallest EISPAC multi-component template with that line is used. Pixels with a peak below 3 times its error, or a parameter on a template limit, are grey. Full-CCD windows get `int` only.
 
-For a raster with several exposures per position, the longest exposure is used. For a sit-and-stare observation, the X axis is time.
+For a raster with several exposures per position, the longest exposure is used. Maps have the same arcsec scale in X and Y. A map with one side more than 8 times the other is stretched to that ratio, and says so in the corner of the image. For a sit-and-stare observation the X axis is time, and the map fills the image.
 
 From Python, for a raster already on disk:
 

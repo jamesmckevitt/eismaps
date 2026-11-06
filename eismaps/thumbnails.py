@@ -61,6 +61,16 @@ MIN_COLUMN_FRACTION = 0.02
 # Range of the symmetric velocity colour scale in km/s.
 VELOCITY_SCALE_LIMITS = (10.0, 60.0)
 
+# Largest area of a thumbnail for the map, as left, bottom, width and height.
+MAP_AREA = (0.11, 0.09, 0.70, 0.80)
+
+# Maps are drawn with equal arcsec scales in X and Y, up to this ratio of their
+# sides. Longer maps are stretched to this ratio, to stay readable.
+MAX_MAP_RATIO = 8.0
+
+# Shortest colour bar, as a fraction of the thumbnail height.
+MIN_BAR_HEIGHT = 0.4
+
 
 def _timestamp(name):
     """Return the 'YYYYMMDD_HHMMSS' in a file name or string."""
@@ -268,8 +278,9 @@ def _axes(cube):
     Returns
     -------
     tuple
-        Extent as (left, right, bottom, top), X label, Y label, and True if
-        the columns run backwards in time and must be reversed.
+        Extent as (left, right, bottom, top), X label, Y label, True if the
+        columns run backwards in time and must be reversed, and True if X and
+        Y are both in arcsec.
     """
     n_y, n_x = cube.data.shape[:2]
     names = cube.wcs.world_axis_physical_types
@@ -292,9 +303,9 @@ def _axes(cube):
         reverse = minutes[0] > minutes[-1]
         span = float(minutes.max())
         half_t = 0.5 * span / (n_x - 1) if n_x > 1 and span > 0 else 0.5
-        return (-half_t, span + half_t, bottom, top), 'Time since first exposure (minutes)', y_label, bool(reverse)
+        return (-half_t, span + half_t, bottom, top), 'Time since first exposure (minutes)', y_label, bool(reverse), False
 
-    return (world_x[0] - half_x, world_x[2] + half_x, bottom, top), 'Solar-X (arcsec)', y_label, False
+    return (world_x[0] - half_x, world_x[2] + half_x, bottom, top), 'Solar-X (arcsec)', y_label, False, True
 
 
 def _scale(image, measurement):
@@ -314,7 +325,33 @@ def _scale(image, measurement):
     return 'viridis', mcolor.Normalize(low, max(high, low + 1e-3)), 'Gaussian width ($\\AA$)', 'both'
 
 
-def render_thumbnail(image, extent, labels, title, subtitle, measurement, path):
+def _map_ratio(extent):
+    """Return the width over height of a map, or None if a side is zero or not finite."""
+    width, height = abs(extent[1] - extent[0]), abs(extent[3] - extent[2])
+    if not (np.isfinite(width) and np.isfinite(height)) or width == 0 or height == 0:
+        return None
+    return float(width / height)
+
+
+def _map_rectangle(extent, equal):
+    """Return the left, bottom, width and height of a map in a square thumbnail.
+
+    With `equal`, the sides follow the extent, centred in `MAP_AREA`, so that
+    an arcsec has the same length in X and Y. Otherwise the map fills the area.
+    """
+    left, bottom, width, height = MAP_AREA
+    ratio = _map_ratio(extent)
+    if not equal or ratio is None:
+        return left, bottom, width, height
+    ratio = min(max(ratio, 1.0 / MAX_MAP_RATIO), MAX_MAP_RATIO)
+    if ratio > width / height:
+        new_height = width / ratio
+        return left, bottom + 0.5 * (height - new_height), width, new_height
+    new_width = height * ratio
+    return left + 0.5 * (width - new_width), bottom, new_width, height
+
+
+def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, equal=False):
     """Write one thumbnail as a GIF.
 
     Parameters
@@ -331,6 +368,8 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path):
         'int', 'vel' or 'wid'.
     path : str
         Output file.
+    equal : bool, default=False
+        Draw X and Y to the same scale, for axes in the same unit.
     """
     cmap_name, norm, label, extend = _scale(image, measurement)
     cmap = colormaps[cmap_name].with_extremes(bad='0.7')
@@ -338,8 +377,10 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path):
     size = THUMBNAIL_PIXELS / 100.0
     figure = Figure(figsize=(size, size), dpi=100)
     canvas = FigureCanvasAgg(figure)
-    axes = figure.add_axes([0.11, 0.09, 0.70, 0.80])
-    bar = figure.add_axes([0.84, 0.09, 0.03, 0.80])
+    left, bottom, width, height = _map_rectangle(extent, equal)
+    axes = figure.add_axes([left, bottom, width, height])
+    bar_height = max(height, MIN_BAR_HEIGHT)
+    bar = figure.add_axes([left + width + 0.03, bottom + 0.5 * (height - bar_height), 0.03, bar_height])
     shown = axes.imshow(image, origin='lower', aspect='auto', extent=extent, cmap=cmap, norm=norm,
                         interpolation='nearest')
     figure.colorbar(shown, cax=bar, label=label, extend=extend)
@@ -348,6 +389,9 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path):
     figure.suptitle(f'{title}\n{subtitle}', fontsize=11)
     figure.text(0.995, 0.005, f"eismaps {version('eismaps')}, eispac {version('eispac')}",
                 ha='right', va='bottom', fontsize=5, color='0.4')
+    ratio = _map_ratio(extent)
+    if equal and ratio is not None and not 1.0 / MAX_MAP_RATIO <= ratio <= MAX_MAP_RATIO:
+        figure.text(0.005, 0.005, 'X and Y scales differ', ha='left', va='bottom', fontsize=6, color='0.4')
 
     canvas.draw()
     pixels = np.asarray(canvas.buffer_rgba())[:, :, :3]
@@ -414,7 +458,7 @@ def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_
         try:
             cube = _read_cube(data_file, iwin, exposure)
             wave, inten, errs = cube_arrays(cube)
-            extent, x_label, y_label, reverse = _axes(cube)
+            extent, x_label, y_label, reverse, equal = _axes(cube)
             order = slice(None, None, -1) if reverse else slice(None)
             labels = (x_label, y_label)
             heading = f'{title.strip()} [{low:.2f}-{high:.2f} $\\AA$]'
@@ -431,7 +475,7 @@ def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_
             intensity = _summed_intensity(wave, inten, errs) * _exposure_factor(cube, reference_exposure)[None, :]
             intensity = intensity * (1.0 if factor is None else factor)
             path = thumbnail_path(output_root, timestamp, iwin, title, 'int')
-            render_thumbnail(intensity[:, order], extent, labels, f'Intensity - {heading}', date, 'int', path)
+            render_thumbnail(intensity[:, order], extent, labels, f'Intensity - {heading}', date, 'int', path, equal)
             entry['files'].append(os.path.basename(path))
 
             if fit is None:
@@ -448,7 +492,8 @@ def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_
             detail = f'{fit.line}, {int(fit.template["n_gauss"])} Gaussian' + ('s' if not fit.single else '')
             for name, image, label in (('vel', velocity, 'Velocity'), ('wid', width, 'Width')):
                 path = thumbnail_path(output_root, timestamp, iwin, title, name)
-                render_thumbnail(image[:, order], extent, labels, f'{label} - {heading}', f'{date}  ({detail})', name, path)
+                render_thumbnail(image[:, order], extent, labels, f'{label} - {heading}', f'{date}  ({detail})', name, path,
+                                 equal)
                 entry['files'].append(os.path.basename(path))
         except Exception:
             entry['error'] = traceback.format_exc(limit=3)
