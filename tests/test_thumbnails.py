@@ -211,6 +211,32 @@ def test_very_narrow_map_is_stretched_to_the_limit():
     assert width / height == 1 / MAX_MAP_RATIO
 
 
+def test_very_wide_map_is_stretched_to_the_limit():
+    left, bottom, width, height = _map_rectangle((0, 512, 0, 10), True)
+    assert width / height == MAX_MAP_RATIO
+
+
+def test_map_stays_in_its_area():
+    for extent in ((0, 1, 0, 1), (0, 10, 0, 512), (0, 512, 0, 10), (0, 491, 0, 512)):
+        left, bottom, width, height = _map_rectangle(extent, True)
+        assert left >= MAP_AREA[0] and bottom >= MAP_AREA[1]
+        assert left + width <= MAP_AREA[0] + MAP_AREA[2] + 1e-12
+        assert bottom + height <= MAP_AREA[1] + MAP_AREA[3] + 1e-12
+
+
+def test_degenerate_extent_fills_the_area():
+    for extent in ((5, 5, 3, 3), (0, 10, 5, 5), (0, float('nan'), 0, 1)):
+        assert _map_rectangle(extent, True) == MAP_AREA
+
+
+def test_stretched_and_wide_maps_render(tmp_path):
+    image = np.random.default_rng(1).normal(size=(10, 10))
+    for name, extent in (('wide', (0, 512, 0, 10)), ('narrow', (0, 10, 0, 512))):
+        path = tmp_path / f'{name}.gif'
+        render_thumbnail(image, extent, ('x', 'y'), 't', 's', 'int', str(path), equal=True)
+        assert path.exists()
+
+
 def test_time_axis_fills_the_area():
     assert _map_rectangle((0, 8, -100, 200), False) == MAP_AREA
 
