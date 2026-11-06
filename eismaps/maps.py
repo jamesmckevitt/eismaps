@@ -137,7 +137,7 @@ def _package_maps(measurements, maps_by_measurement):
         packaged[current_measurement] = package_one(maps_by_measurement[current_measurement])
     return packaged
     
-def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, output_dir=None, output_dir_tree=False, vel_los_correct=False, skip_done=True, mssl_solarb_file_format=False):
+def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, output_dir=None, output_dir_tree=False, vel_los_correct=False, skip_done=True):
     """Make raster maps from saved or in-memory fit results.
 
     Parameters
@@ -168,8 +168,6 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
     skip_done : bool, default=True
         Skip maps whose output files already exist. Skipped maps are not
         returned.
-    mssl_solarb_file_format : bool, default=False
-        Save plots as GIFs with MSSL Solar-B style names instead of PNGs.
 
     Returns
     -------
@@ -222,16 +220,8 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
                 continue
 
             output_file_png = None
-            output_file_gif = None
             if save_plot:
                 output_file_png = os.path.join(file_output_dir, f"{file_name.replace('.fit.h5', f'.{m}.png')}")
-                if mssl_solarb_file_format:
-                    output_file_png_filename = os.path.basename(output_file_png)
-                    output_file_datetime = f"{output_file_png_filename.split('.')[0].split('_')[1]}_{output_file_png_filename.split('.')[0].split('_')[2]}"
-                    output_file_iwin = fit_res.meta['iwin']
-                    output_file_lineid = fit_res.meta['line_id']
-                    output_file_gif_filename = f"eis_l0_{output_file_datetime}.fits_line_{output_file_iwin}_{output_file_lineid.replace(' ', '_').upper()}.{m}.gif"
-                    output_file_gif = os.path.join(file_output_dir, output_file_gif_filename)
                 if skip_done and os.path.exists(output_file_png):
                     print(f"Skipping {m} map for {file_name} because it already exists.")
                     continue
@@ -312,10 +302,7 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
                     cb_label = f'{cb_label} [{bunit}]'
                 plt.colorbar(label=cb_label or None, extend=extend)
 
-                if mssl_solarb_file_format:
-                    plt.savefig(output_file_gif, dpi=100)
-                else:
-                    plt.savefig(output_file_png)
+                plt.savefig(output_file_png)
                 plt.close()
 
             maps_by_measurement[m].append(m_map)
@@ -608,7 +595,6 @@ def make_maps(
     output_dir_tree=False,
     vel_los_correct=False,
     skip_done=True,
-    mssl_solarb_file_format=False,
 ):
     """Make SunPy maps from saved or in-memory EISPAC fit results.
 
@@ -648,8 +634,6 @@ def make_maps(
     skip_done : bool, default=True
         Skip maps whose output files already exist. Skipped maps are not
         returned.
-    mssl_solarb_file_format : bool, default=False
-        Save plots as GIFs with MSSL Solar-B style names instead of PNGs.
 
     Returns
     -------
@@ -679,7 +663,6 @@ def make_maps(
             output_dir_tree=output_dir_tree,
             vel_los_correct=vel_los_correct,
             skip_done=skip_done,
-            mssl_solarb_file_format=mssl_solarb_file_format,
         )
 
     def _make_maps_for_single_fit(fit_item):
@@ -693,7 +676,6 @@ def make_maps(
             output_dir_tree=output_dir_tree,
             vel_los_correct=vel_los_correct,
             skip_done=skip_done,
-            mssl_solarb_file_format=mssl_solarb_file_format,
         )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
