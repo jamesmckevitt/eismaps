@@ -384,6 +384,33 @@ def _iterate(problem, base, rows, values, damping0, maxiter, tolerance, keep_pea
     return result, status
 
 
+def _retry_start(problem, rows, values):
+    """Return start values for a second attempt at fits that ended with a peak of zero.
+
+    A single Gaussian is moved to the strongest point within its centroid
+    limits, which finds a line far from the template's centroid. Fits with
+    several Gaussians keep their start values, as a Gaussian moved this way
+    could take part of a neighbouring line.
+    """
+    position = {index: i for i, index in enumerate(problem.free)}
+    peak_at, centroid_at = position.get(0), position.get(1)
+    if problem.n_gauss != 1 or peak_at is None or centroid_at is None:
+        return values
+    start = values.copy()
+    wave, inten, good = problem.wave[rows], problem.inten[rows], problem.good[rows]
+    floor = np.nanmedian(np.where(good, inten, np.nan), axis=1, keepdims=True)
+    low = problem.lower[centroid_at] if problem.has_lower[centroid_at] else -np.inf
+    high = problem.upper[centroid_at] if problem.has_upper[centroid_at] else np.inf
+    excess = np.where(good & (wave >= low) & (wave <= high), inten - floor, -np.inf)
+    strongest = np.argmax(excess, axis=1)
+    lines = np.arange(rows.size)
+    peak = excess[lines, strongest]
+    found = peak > 0
+    start[found, peak_at] = peak[found]
+    start[found, centroid_at] = wave[lines, strongest][found]
+    return start
+
+
 def _fit_block(wave, inten, errs, template, parinfo, min_points, maxiter, tolerance):
     """Fit one block of spectra with arrays of shape (n_spectra, n_wave)."""
     problem = _Problem(wave, inten, errs, template, parinfo, min_points)
@@ -412,7 +439,8 @@ def _fit_block(wave, inten, errs, template, parinfo, min_points, maxiter, tolera
     peaks = problem.full_params(base, rows, values)[:, 0:3 * problem.n_gauss:3]
     empty = np.nonzero((peaks <= 0).any(axis=1))[0]
     if empty.size:
-        second, second_status = _iterate(problem, base, rows[empty], free_start[rows[empty]],
+        retry = _retry_start(problem, rows[empty], free_start[rows[empty]])
+        second, second_status = _iterate(problem, base, rows[empty], retry,
                                          RESTART_DAMPING, maxiter, tolerance, keep_peaks_off_zero=True)
         second_chi2 = (problem.residuals(base, rows[empty], second)[0] ** 2).sum(axis=1)
         better = (second_status > 0) & (second_chi2 < row_chi2[empty])

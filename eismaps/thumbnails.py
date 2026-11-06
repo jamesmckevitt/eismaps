@@ -193,24 +193,22 @@ def _mean_spectrum(wave, inten, errs):
     return wave.mean(axis=(0, 1)), mean, np.where(count > 0, error, 0.0)
 
 
-def _parameter_source(fit_res, index):
-    """Return the parameter holding the value and error of a parameter, following any tie."""
+def _parameter_state(fit_res, index):
+    """Return where a parameter has an error and where it is on a template limit.
+
+    A tied parameter has no error of its own, so the one it is tied to is used.
+    """
     tied = str(fit_res.parinfo[index].get('tied', '') or '')
     match = re.search(r'p\[(\d+)\]', tied)
-    return int(match.group(1)) if match else index
-
-
-def _measured(fit_res, index):
-    """Return True where a parameter of a usable fit is off its limits and has an error."""
-    source = _parameter_source(fit_res, index)
+    source = int(match.group(1)) if match else index
     values = fit_res.fit['params'][:, :, source]
-    errors = fit_res.fit['perror'][:, :, source]
-    measured = errors > 0
+    has_error = fit_res.fit['perror'][:, :, source] > 0
+    on_limit = np.zeros(values.shape, dtype=bool)
     info = fit_res.parinfo[source]
     for side in (0, 1):
-        if info['limited'][side]:
-            measured &= values != info['limits'][side]
-    return measured
+        if info.get('limited', (0, 0))[side]:
+            on_limit |= values == info['limits'][side]
+    return has_error, on_limit
 
 
 def _column_zero_point(velocity):
@@ -233,7 +231,11 @@ def fitted_maps(fit_res, component):
     """Return velocity and width maps of one component.
 
     Pixels are left out where the fit is not usable, the peak is below
-    `MIN_PEAK_SNR` errors, or the parameter is on a template limit.
+    `MIN_PEAK_SNR` errors, or the parameter is not constrained. Values on a
+    template limit are kept, as these are often the fastest and broadest
+    pixels of a flare, and the true value is then at or beyond the limit.
+    :func:`eismaps.maps.measurement_mask` leaves them out for measurements.
+    The column zero point and the colour scales use the other pixels.
 
     Parameters
     ----------
@@ -245,8 +247,9 @@ def fitted_maps(fit_res, component):
     Returns
     -------
     tuple of np.ndarray
-        Velocity in km/s, relative to the median of each raster column, and
-        Gaussian width in Angstrom, shape (n_pixels, n_steps).
+        Velocity in km/s, relative to the median of each raster column,
+        Gaussian width in Angstrom, and True where each of them is off its
+        limits, all of shape (n_pixels, n_steps).
     """
     params, perror = fit_res.fit['params'], fit_res.fit['perror']
     peak, peak_error = params[:, :, 3 * component], perror[:, :, 3 * component]
@@ -254,14 +257,17 @@ def fitted_maps(fit_res, component):
     usable &= peak >= MIN_PEAK_SNR * peak_error
 
     centroid_index = 3 * component + 1
+    has_error, on_limit = _parameter_state(fit_res, centroid_index)
     rest = float(fit_res.parinfo[centroid_index]['value'])
     velocity = CC * (params[:, :, centroid_index] - rest) / rest
-    velocity = np.where(usable & _measured(fit_res, centroid_index), velocity, np.nan)
-    velocity = velocity - _column_zero_point(velocity)[None, :]
+    velocity_off_limit = usable & has_error & ~on_limit
+    zero_point = _column_zero_point(np.where(velocity_off_limit, velocity, np.nan))
+    velocity = np.where(usable & (has_error | on_limit), velocity - zero_point[None, :], np.nan)
 
     width_index = 3 * component + 2
-    width = np.where(usable & _measured(fit_res, width_index), params[:, :, width_index], np.nan)
-    return velocity, width
+    has_error, on_limit = _parameter_state(fit_res, width_index)
+    width = np.where(usable & (has_error | on_limit), params[:, :, width_index], np.nan)
+    return velocity, width, velocity_off_limit, usable & has_error & ~on_limit
 
 
 def _arcsec(degrees):
@@ -351,7 +357,7 @@ def _map_rectangle(extent, equal):
     return left + 0.5 * (width - new_width), bottom, new_width, height
 
 
-def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, equal=False):
+def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, equal=False, scale_pixels=None):
     """Write one thumbnail as a GIF.
 
     Parameters
@@ -370,8 +376,10 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, 
         Output file.
     equal : bool, default=False
         Draw X and Y to the same scale, for axes in the same unit.
+    scale_pixels : np.ndarray, optional
+        True for the pixels that set the colour scale. All pixels by default.
     """
-    cmap_name, norm, label, extend = _scale(image, measurement)
+    cmap_name, norm, label, extend = _scale(image if scale_pixels is None else image[scale_pixels], measurement)
     cmap = colormaps[cmap_name].with_extremes(bad='0.7')
 
     size = THUMBNAIL_PIXELS / 100.0
@@ -388,10 +396,10 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, 
     axes.set_ylabel(labels[1])
     figure.suptitle(f'{title}\n{subtitle}', fontsize=11)
     figure.text(0.995, 0.005, f"eismaps {version('eismaps')}, eispac {version('eispac')}",
-                ha='right', va='bottom', fontsize=5, color='0.4')
+                ha='right', va='bottom', fontsize=7, color='0.55')
     ratio = _map_ratio(extent)
     if equal and ratio is not None and not 1.0 / MAX_MAP_RATIO <= ratio <= MAX_MAP_RATIO:
-        figure.text(0.005, 0.005, 'X and Y scales differ', ha='left', va='bottom', fontsize=6, color='0.4')
+        figure.text(0.005, 0.005, 'X and Y scales differ', ha='left', va='bottom', fontsize=7, color='0.55')
 
     canvas.draw()
     pixels = np.asarray(canvas.buffer_rgba())[:, :, :3]
@@ -483,17 +491,18 @@ def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_
                 continue
             tolerance = TOLERANCE if int(fit.template['n_gauss']) <= 2 else DEGENERATE_TOLERANCE
             result = fit_cube(cube, fit.template, fit.parinfo, component=fit.component, tolerance=tolerance)
-            velocity, width = fitted_maps(result, fit.component)
+            velocity, width, velocity_off_limit, width_off_limit = fitted_maps(result, fit.component)
             entry['fit'] = {'line': fit.line, 'source': fit.source, 'n_gauss': int(fit.template['n_gauss']),
                             'single': fit.single, 'intensity_ratio': fit.intensity_ratio,
                             'velocity_offset': fit.velocity_offset,
                             'fitted_fraction': float((result.fit['status'] > 0).mean()),
                             'velocity_fraction': float(np.isfinite(velocity).mean())}
             detail = f'{fit.line}, {int(fit.template["n_gauss"])} Gaussian' + ('s' if not fit.single else '')
-            for name, image, label in (('vel', velocity, 'Velocity'), ('wid', width, 'Width')):
+            for name, image, off_limit, label in (('vel', velocity, velocity_off_limit, 'Velocity'),
+                                                  ('wid', width, width_off_limit, 'Width')):
                 path = thumbnail_path(output_root, timestamp, iwin, title, name)
                 render_thumbnail(image[:, order], extent, labels, f'{label} - {heading}', f'{date}  ({detail})', name, path,
-                                 equal)
+                                 equal, off_limit[:, order])
                 entry['files'].append(os.path.basename(path))
         except Exception:
             entry['error'] = traceback.format_exc(limit=3)
