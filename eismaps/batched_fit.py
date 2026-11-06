@@ -197,8 +197,10 @@ class _Problem:
         self.n_params = 3 * self.n_gauss + self.n_poly
         self.min_points = max(min_points, self.n_params)
         self.guess = np.asarray(template['fit'], dtype=float)
-        self.wave, self.inten = wave, inten
-        self.good = (errs > 0) & (wave >= template['wmin']) & (wave <= template['wmax'])
+        self.good = (errs > 0) & (wave >= template['wmin']) & (wave <= template['wmax']) & np.isfinite(inten)
+        # Unused points have zero weight, and NaN would survive that.
+        self.wave = np.where(self.good, wave, 0.0)
+        self.inten = np.where(self.good, inten, 0.0)
         self.n_good = self.good.sum(axis=1)
         self.weight = self.good / np.where(self.good, errs, 1.0)
 
@@ -386,7 +388,7 @@ def _fit_block(wave, inten, errs, template, parinfo, min_points, maxiter, tolera
     """Fit one block of spectra with arrays of shape (n_spectra, n_wave)."""
     problem = _Problem(wave, inten, errs, template, parinfo, min_points)
     n_spectra = wave.shape[0]
-    base = _start_values(wave, inten, problem.good, problem.guess, problem.n_gauss, problem.n_poly)
+    base = _start_values(problem.wave, problem.inten, problem.good, problem.guess, problem.n_gauss, problem.n_poly)
     free_start = base[:, problem.free]
 
     enough = problem.n_good >= problem.min_points
@@ -433,11 +435,12 @@ def _fit_block(wave, inten, errs, template, parinfo, min_points, maxiter, tolera
     for n in range(problem.n_gauss):
         no_line = fitted[:, 3 * n] < ZERO_PEAK_FRACTION * errors[:, 3 * n]
         fitted[no_line, 3 * n] = 0.0
-        errors[no_line, 3 * n:3 * n + 3] = 0.0
+        errors[no_line, 3 * n] = 0.0
 
     params[rows] = fitted
     perror[rows] = errors
-    chi2[rows] = (residuals * residuals).sum(axis=1) / (problem.n_good[rows] - problem.free.size)
+    with np.errstate(all='ignore'):
+        chi2[rows] = (residuals * residuals).sum(axis=1) / (problem.n_good[rows] - problem.free.size)
     return params, perror, chi2, status
 
 
@@ -487,7 +490,7 @@ def cube_arrays(cube):
     wave = np.array(cube.wavelength, dtype=float)
     inten = np.array(cube.data, dtype=float)
     errs = np.array(cube.uncertainty.array, dtype=float)
-    bad = np.asarray(cube.mask, dtype=bool)
+    bad = np.asarray(cube.mask, dtype=bool) | ~np.isfinite(inten) | ~np.isfinite(wave)
     inten[bad] = 0.0
     errs[bad] = 0.0
     return wave, inten, errs
@@ -541,7 +544,7 @@ def fit_cube(cube, template, parinfo, component=0, **kwargs):
         fit['int'][:, :, n] = np.sqrt(2 * np.pi) * peak * width
         fit['width'][:, :, n] = width
         fit['err_width'][:, :, n] = width_err
-        with np.errstate(divide='ignore', invalid='ignore'):
+        with np.errstate(all='ignore'):
             relative = np.sqrt((peak_err / peak) ** 2 + (width_err / width) ** 2)
         fit['err_int'][:, :, n] = np.where(peak > 0, fit['int'][:, :, n] * relative, 0.0)
         rest = float(parinfo[3 * n + 1]['value'])

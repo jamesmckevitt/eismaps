@@ -20,7 +20,7 @@ import eispac
 import numpy as np
 
 from eismaps.batched_fit import fit_spectra
-from eismaps.utils import roman_to_int
+from eismaps.utils import int_to_roman, roman_to_int
 
 CC = 2.9979E+5  # speed of light in km/s
 
@@ -60,6 +60,10 @@ MIN_MEAN_PEAK_SNR = 5.0
 
 # A template line this close in Angstrom to a peak is taken to be that peak.
 LINE_MATCH = 0.05
+
+# A peak this close in Angstrom to a title's wavelength is taken to be the line
+# named in the title. Titles often give the window centre.
+TITLE_MATCH = 0.2
 
 
 @dataclass
@@ -215,7 +219,6 @@ def _strongest_peak(wave, inten, errs):
 
 def _format_line(line):
     element, charge, wavelength = line
-    from eismaps.utils import int_to_roman
     return f'{element.capitalize()} {int_to_roman(charge)} {wavelength:.3f}'
 
 
@@ -275,7 +278,10 @@ def choose_fit(title, low, high, wave, inten, errs):
         return None
     if not isinstance(target, tuple):
         template, parinfo = _generic_gaussian(target)
-        return WindowFit(template, parinfo, 0, f'Unidentified {target:.3f}', 'generic', True)
+        ions, title_wave = parse_title(title)
+        named = ions and title_wave is not None and abs(target - title_wave) <= TITLE_MATCH
+        name = title.strip() if named else f'Line at {target:.3f}'
+        return WindowFit(template, parinfo, 0, name, 'generic', True)
 
     holders = [(path, n_gauss, lines.index(target)) for path, n_gauss, lines in template_library()
                if target in lines]

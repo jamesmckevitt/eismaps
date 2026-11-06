@@ -3,6 +3,7 @@
 import copy
 import eispac
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 import matplotlib.pyplot as plt
 import numpy as np
@@ -137,7 +138,7 @@ def _package_maps(measurements, maps_by_measurement):
         packaged[current_measurement] = package_one(maps_by_measurement[current_measurement])
     return packaged
     
-def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, output_dir=None, output_dir_tree=False, vel_los_correct=False, skip_done=True):
+def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, output_dir=None, output_dir_tree=False, vel_los_correct=False, skip_done=True, mssl_solarb_file_format=False):
     """Make raster maps from saved or in-memory fit results.
 
     Parameters
@@ -168,6 +169,8 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
     skip_done : bool, default=True
         Skip maps whose output files already exist. Skipped maps are not
         returned.
+    mssl_solarb_file_format : bool, default=False
+        Deprecated and ignored. Use :func:`eismaps.make_thumbnails`.
 
     Returns
     -------
@@ -176,6 +179,9 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
         keyed by measurement.
     """
 
+    if mssl_solarb_file_format:
+        warnings.warn('mssl_solarb_file_format is ignored and will be removed. Use eismaps.make_thumbnails.',
+                      DeprecationWarning, stacklevel=2)
     measurement = _normalise_measurements(measurement)
     maps_by_measurement = {name: [] for name in measurement}
 
@@ -595,6 +601,7 @@ def make_maps(
     output_dir_tree=False,
     vel_los_correct=False,
     skip_done=True,
+    mssl_solarb_file_format=False,
 ):
     """Make SunPy maps from saved or in-memory EISPAC fit results.
 
@@ -634,6 +641,8 @@ def make_maps(
     skip_done : bool, default=True
         Skip maps whose output files already exist. Skipped maps are not
         returned.
+    mssl_solarb_file_format : bool, default=False
+        Deprecated and ignored. Use :func:`eismaps.make_thumbnails`.
 
     Returns
     -------
@@ -663,6 +672,7 @@ def make_maps(
             output_dir_tree=output_dir_tree,
             vel_los_correct=vel_los_correct,
             skip_done=skip_done,
+            mssl_solarb_file_format=mssl_solarb_file_format,
         )
 
     def _make_maps_for_single_fit(fit_item):
@@ -676,6 +686,7 @@ def make_maps(
             output_dir_tree=output_dir_tree,
             vel_los_correct=vel_los_correct,
             skip_done=skip_done,
+            mssl_solarb_file_format=mssl_solarb_file_format,
         )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:

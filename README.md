@@ -210,7 +210,7 @@ eismaps-solarb-thumbnails 20130116_093720 --output thumbnails
 eismaps-solarb-thumbnails --date 2013-01-16 --output thumbnails --processes 8
 ```
 
-Files are downloaded from the MSSL mirror, or from NRL if the mirror has no complete copy, and deleted afterwards. A JSON file beside each raster's thumbnails records the fit used for each window. Rasters with such a file are skipped unless `--overwrite` is given. Only rasters with level 1 HDF5 files can be processed, which leaves out the 40 and 266 arcsec slot observations.
+Files are downloaded from the MSSL mirror, or from NRL if the mirror has no complete copy, and deleted afterwards. A JSON file beside each raster's thumbnails records the fit used for each window. Rasters done without errors are skipped unless `--overwrite` is given, and a raster that fails has its reason in a file ending in `.error`. Only rasters with level 1 HDF5 files can be processed, which leaves out the 40 and 266 arcsec slot observations.
 
 The fits use `eismaps.batched_fit`, which fits all the spectra of a window together and is much faster than EISPAC's `fit_spectra`. It takes the same template and returns an EISPAC fit result:
 
