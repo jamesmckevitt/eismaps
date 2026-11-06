@@ -5,6 +5,7 @@ otherwise. Some files on the mirror are truncated, so each download is opened
 before it is accepted.
 """
 
+import http.client
 import os
 import re
 import urllib.error
@@ -36,6 +37,11 @@ def list_rasters(date):
     -------
     list[str]
         Sorted timestamps such as '20130116_093720'.
+
+    Raises
+    ------
+    ConnectionError
+        If a server does not answer, as the day could then be incomplete.
     """
     day = date.replace('-', '')
     found = set()
@@ -43,8 +49,13 @@ def list_rasters(date):
         try:
             with urllib.request.urlopen(f'{server}/{_day_path(day)}/', timeout=TIMEOUT) as response:
                 listing = response.read().decode('utf-8', 'replace')
-        except (urllib.error.URLError, OSError):
-            continue
+        except urllib.error.HTTPError as error:
+            # A day with no observations has no directory.
+            if error.code == 404:
+                continue
+            raise ConnectionError(f'{server} gave status {error.code} for {date}') from error
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
+            raise ConnectionError(f'{server} did not answer for {date}') from error
         found.update(re.findall(r'eis_(\d{8}_\d{6})\.data\.h5', listing))
     return sorted(found)
 
@@ -98,7 +109,7 @@ def fetch_raster(timestamp, directory):
         try:
             for kind, path in paths.items():
                 _download(f'{server}/{_day_path(timestamp)}/eis_{timestamp}.{kind}.h5', path)
-        except (urllib.error.URLError, OSError):
+        except (urllib.error.URLError, http.client.HTTPException, OSError):
             continue
         if all(_readable(p) for p in paths.values()):
             return paths['data']
