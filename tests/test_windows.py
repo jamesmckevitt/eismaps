@@ -70,6 +70,7 @@ def test_ion_with_no_template_gets_a_generic_fit():
     wave, inten, errs = spectrum([(3000.0, 278.402, 0.03)], 278.14, 278.66)
     fit = choose_fit('Mg VII 278.400', 278.14, 278.66, wave, inten, errs)
     assert fit.source == 'generic'
+    assert fit.line == 'Mg VII 278.400'
     assert fit.template['wmin'] < 278.402 < fit.template['wmax']
 
 

@@ -20,7 +20,7 @@ import eispac
 import numpy as np
 
 from eismaps.batched_fit import fit_spectra
-from eismaps.utils import roman_to_int
+from eismaps.utils import int_to_roman, roman_to_int
 
 CC = 2.9979E+5  # speed of light in km/s
 
@@ -215,7 +215,6 @@ def _strongest_peak(wave, inten, errs):
 
 def _format_line(line):
     element, charge, wavelength = line
-    from eismaps.utils import int_to_roman
     return f'{element.capitalize()} {int_to_roman(charge)} {wavelength:.3f}'
 
 
@@ -275,7 +274,8 @@ def choose_fit(title, low, high, wave, inten, errs):
         return None
     if not isinstance(target, tuple):
         template, parinfo = _generic_gaussian(target)
-        return WindowFit(template, parinfo, 0, f'Unidentified {target:.3f}', 'generic', True)
+        name = title.strip() if parse_title(title)[0] else f'Line at {target:.3f}'
+        return WindowFit(template, parinfo, 0, name, 'generic', True)
 
     holders = [(path, n_gauss, lines.index(target)) for path, n_gauss, lines in template_library()
                if target in lines]
