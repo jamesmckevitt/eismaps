@@ -311,7 +311,7 @@ def test_tied_parameters_of_a_second_component():
 
 def test_colour_scale_can_ignore_pixels(tmp_path):
     image = np.full((10, 10), 0.03)
-    image[0, 0] = 0.05
+    image[0, :] = 0.05
     assert _scale(image[image < 0.04], 'wid')[1].vmax < 0.04
     assert _scale(image, 'wid')[1].vmax > 0.04
     path = tmp_path / 'c.gif'
