@@ -262,7 +262,11 @@ def batch(files, lines_to_fit='all', ncpu='max', filter_chi2=None, save=True, ou
                 # One template per window: prefer 1-component, else first candidate.
                 one_comp = [t for t in candidate_templates if _component_count_from_name(t) == 1]
                 template_to_fit = one_comp[0] if one_comp else candidate_templates[0]
-                line_label = change_line_format(wininfo[iwin]['line_id'])
+                try:
+                    line_label = change_line_format(wininfo[iwin]['line_id'])
+                except ValueError:
+                    print(f"Skipping window {iwin}: its title '{wininfo[iwin]['line_id']}' does not name a line.")
+                    continue
 
                 if skip_done and save and output_dir is not None:
                     resolved_dir = _resolve_output_dir(file, output_dir, output_dir_tree)
