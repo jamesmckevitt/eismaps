@@ -490,7 +490,7 @@ def cube_arrays(cube):
     wave = np.array(cube.wavelength, dtype=float)
     inten = np.array(cube.data, dtype=float)
     errs = np.array(cube.uncertainty.array, dtype=float)
-    bad = np.asarray(cube.mask, dtype=bool)
+    bad = np.asarray(cube.mask, dtype=bool) | ~np.isfinite(inten) | ~np.isfinite(wave)
     inten[bad] = 0.0
     errs[bad] = 0.0
     return wave, inten, errs

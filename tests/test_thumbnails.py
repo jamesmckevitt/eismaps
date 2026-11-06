@@ -7,8 +7,9 @@ import h5py
 import numpy as np
 from PIL import Image
 
-from eismaps.thumbnails import (_column_zero_point, _exposure_choice, _exposure_factor, _is_done,
-                                _record_path, _summed_intensity, render_thumbnail, thumbnail_path)
+from eismaps.thumbnails import (_arcsec, _column_zero_point, _exposure_choice, _exposure_factor, _is_done,
+                                _process, _record_path, _summed_intensity, process_raster,
+                                render_thumbnail, RasterUnavailable, thumbnail_path)
 
 
 def test_path_follows_the_archive():
@@ -90,6 +91,25 @@ def test_column_with_few_pixels_uses_its_neighbours():
     assert _column_zero_point(velocity).tolist() == [2.0, 3.0, 4.0]
 
 
+def test_long_column_needs_more_than_a_few_pixels():
+    # Five pixels of a flare kernel in a 512-pixel column are not a zero point.
+    velocity = np.full((512, 3), np.nan)
+    velocity[:, 0] = 2.0
+    velocity[:, 2] = 4.0
+    velocity[:5, 1] = -100.0
+    assert _column_zero_point(velocity)[1] == 3.0
+
+
+def test_short_window_still_removes_column_drift():
+    velocity = np.array([[1.0, 5.0], [1.0, 5.0], [1.0, 5.0], [1.0, 5.0]])
+    assert _column_zero_point(velocity).tolist() == [1.0, 5.0]
+
+
+def test_arcsec_wraps_both_ways():
+    # The WCS returned -359.9938 degrees for a raster crossing Solar-X = 0.
+    assert np.allclose(_arcsec([-0.0102, -359.9938, 359.99, 0.01]), [-36.72, 22.32, -36.0, 36.0])
+
+
 def test_single_row_keeps_differences_between_columns():
     velocity = np.array([[1.0, 2.0, 9.0]])
     assert _column_zero_point(velocity).tolist() == [2.0, 2.0, 2.0]
@@ -106,11 +126,35 @@ def test_rasters_with_errors_are_not_done(tmp_path):
     path = _record_path(root, timestamp)
     os.makedirs(os.path.dirname(path))
     with open(path, 'w') as output:
-        json.dump({'timestamp': timestamp, 'error': 'server down'}, output)
+        json.dump({'timestamp': timestamp, 'windows': [{'iwin': 0, 'fit_error': 'bad template'}]}, output)
     assert not _is_done(root, timestamp)
     with open(path, 'w') as output:
         json.dump({'timestamp': timestamp, 'windows': [{'iwin': 0}]}, output)
     assert _is_done(root, timestamp)
+
+
+def test_failure_does_not_replace_a_good_record(tmp_path, monkeypatch):
+    root = str(tmp_path / 'out')
+    timestamp = '20130116_093720'
+    path = _record_path(root, timestamp)
+    os.makedirs(os.path.dirname(path))
+    with open(path, 'w') as output:
+        json.dump({'timestamp': timestamp, 'windows': []}, output)
+
+    def unavailable(*args):
+        raise RasterUnavailable('server down')
+
+    monkeypatch.setattr('eismaps.thumbnails.fetch_raster', unavailable)
+    record = process_raster(timestamp, root, str(tmp_path))
+    assert record['error'] == 'server down'
+    assert _is_done(root, timestamp)
+    assert os.path.exists(path + '.error')
+
+
+def test_one_failed_raster_does_not_stop_a_batch():
+    # A name with no time raises in process_raster, and must come back as a record.
+    record = _process(('nonsense', 'out', None, 'del_zanna_2025'))
+    assert 'error' in record
 
 
 def test_thumbnail_is_a_768_pixel_gif(tmp_path):

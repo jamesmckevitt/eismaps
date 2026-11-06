@@ -3,6 +3,7 @@
 import copy
 import eispac
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 import matplotlib.pyplot as plt
 import numpy as np
@@ -169,7 +170,7 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
         Skip maps whose output files already exist. Skipped maps are not
         returned.
     mssl_solarb_file_format : bool, default=False
-        Deprecated. Use :func:`eismaps.make_thumbnails`. True raises ValueError.
+        Deprecated and ignored. Use :func:`eismaps.make_thumbnails`.
 
     Returns
     -------
@@ -179,7 +180,8 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
     """
 
     if mssl_solarb_file_format:
-        raise ValueError('mssl_solarb_file_format is deprecated. Use eismaps.make_thumbnails.')
+        warnings.warn('mssl_solarb_file_format is ignored and will be removed. Use eismaps.make_thumbnails.',
+                      DeprecationWarning, stacklevel=2)
     measurement = _normalise_measurements(measurement)
     maps_by_measurement = {name: [] for name in measurement}
 
@@ -640,7 +642,7 @@ def make_maps(
         Skip maps whose output files already exist. Skipped maps are not
         returned.
     mssl_solarb_file_format : bool, default=False
-        Deprecated. Use :func:`eismaps.make_thumbnails`. True raises ValueError.
+        Deprecated and ignored. Use :func:`eismaps.make_thumbnails`.
 
     Returns
     -------

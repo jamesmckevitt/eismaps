@@ -51,8 +51,10 @@ MIN_PEAK_SNR = 3.0
 # Pixels need this fraction of good points to have a summed intensity.
 MIN_GOOD_FRACTION = 0.5
 
-# Fewest pixels of a raster column for its own median velocity.
-MIN_COLUMN_PIXELS = 5
+# Fewest pixels of a raster column for its own median velocity, and the
+# fraction of the column they must be.
+MIN_COLUMN_PIXELS = 3
+MIN_COLUMN_FRACTION = 0.02
 
 # Range of the symmetric velocity colour scale in km/s.
 VELOCITY_SCALE_LIMITS = (10.0, 60.0)
@@ -122,11 +124,23 @@ def _exposure_factor(cube, reference):
 
 
 def _read_cube(data_file, iwin, exposure):
-    """Read a window without EISPAC's messages."""
-    with contextlib.redirect_stdout(io.StringIO()):
+    """Read a window without EISPAC's messages.
+
+    Raises
+    ------
+    ValueError
+        If EISPAC cannot read the window, as for one position with several
+        exposures.
+    """
+    messages = io.StringIO()
+    with contextlib.redirect_stdout(messages):
         if exposure is None:
-            return eispac.read_cube(data_file, iwin)
-        return eispac.read_cube(data_file, iwin, exp_set=exposure)
+            cube = eispac.read_cube(data_file, iwin)
+        else:
+            cube = eispac.read_cube(data_file, iwin, exp_set=exposure)
+    if cube is None:
+        raise ValueError(f'EISPAC could not read window {iwin}: {messages.getvalue()[-200:]}')
+    return cube
 
 
 def _summed_intensity(wave, inten, errs):
@@ -175,7 +189,8 @@ def _column_zero_point(velocity):
     Columns with few pixels take their value from the neighbouring columns,
     as the median of a few pixels would remove their real velocity.
     """
-    enough = np.isfinite(velocity).sum(axis=0) >= MIN_COLUMN_PIXELS
+    needed = max(MIN_COLUMN_PIXELS, MIN_COLUMN_FRACTION * velocity.shape[0])
+    enough = np.isfinite(velocity).sum(axis=0) >= needed
     if not enough.any():
         values = velocity[np.isfinite(velocity)]
         return np.full(velocity.shape[1], np.median(values) if values.size else 0.0)
@@ -219,6 +234,11 @@ def fitted_maps(fit_res, component):
     return velocity, width
 
 
+def _arcsec(degrees):
+    """Return angles in degrees as arcsec from -180 to 180 degrees, as the WCS can wrap them."""
+    return (np.asarray(degrees) * 3600.0 + 648000.0) % 1296000.0 - 648000.0
+
+
 def _axes(cube):
     """Return the image extent and axis labels of a window.
 
@@ -236,15 +256,11 @@ def _axes(cube):
     longitude = [i for i, n in enumerate(names) if 'lon' in str(n)][0]
     latitude = [i for i, n in enumerate(names) if 'lat' in str(n)][0]
 
-    def arcsec(world):
-        world = world * 3600.0
-        return np.where(world > 648000.0, world - 1296000.0, world)
-
     # Pixel 1 gives the pixel size, and exists in the WCS for one column or row.
     columns = np.array([0, 1, n_x - 1])
     rows = np.array([0, 1, n_y - 1])
-    world_x = arcsec(cube.wcs.pixel_to_world_values(np.zeros(3), columns, np.zeros(3))[longitude])
-    world_y = arcsec(cube.wcs.pixel_to_world_values(np.zeros(3), np.zeros(3), rows)[latitude])
+    world_x = _arcsec(cube.wcs.pixel_to_world_values(np.zeros(3), columns, np.zeros(3))[longitude])
+    world_y = _arcsec(cube.wcs.pixel_to_world_values(np.zeros(3), np.zeros(3), rows)[latitude])
     half_x = 0.5 * (world_x[1] - world_x[0])
     half_y = 0.5 * (world_y[1] - world_y[0])
     bottom, top = world_y[0] - half_y, world_y[2] + half_y
@@ -325,9 +341,11 @@ def _calibration(date, wavelengths, method):
         if wavelength is None:
             continue
         try:
-            return calibration_factor(date, wavelength, method)
+            factor = calibration_factor(date, wavelength, method)
         except (ValueError, IndexError):
             continue
+        if np.isfinite(factor):
+            return factor
     return None
 
 
@@ -425,14 +443,13 @@ def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='d
     Returns
     -------
     dict
-        Record of the raster, also written as `<level 0 file>.json` beside
-        the thumbnails. A raster that could not be processed has `error` set.
+        Record of the raster, written as `<level 0 file>.json` beside the
+        thumbnails. A raster that could not be processed has `error` set, and
+        is written with `.error` added to the name.
     """
     started = time.perf_counter()
     local = os.path.exists(timestamp_or_file)
     timestamp = _timestamp(timestamp_or_file)
-    if work_dir is not None:
-        os.makedirs(work_dir, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=work_dir) as temporary:
         try:
             data_file = timestamp_or_file if local else fetch_raster(timestamp, temporary)
@@ -442,11 +459,17 @@ def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='d
         except Exception:
             record = {'timestamp': timestamp, 'error': traceback.format_exc(limit=3)}
     record['seconds'] = round(time.perf_counter() - started, 1)
-    path = _record_path(output_root, timestamp)
+    # A failure goes in its own file, so it cannot replace a good record.
+    path = _record_path(output_root, timestamp) + ('.error' if 'error' in record else '')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as output:
         json.dump(record, output, indent=1)
     return record
+
+
+def _window_failed(window):
+    """Return True if a window of a record has an error."""
+    return 'error' in window or 'fit_error' in window
 
 
 def _record_path(output_root, timestamp):
@@ -457,17 +480,20 @@ def _record_path(output_root, timestamp):
 
 def _is_done(output_root, raster):
     """Return True if a raster has a record with no errors."""
-    path = _record_path(output_root, _timestamp(raster))
     try:
-        with open(path) as stored:
+        with open(_record_path(output_root, _timestamp(raster))) as stored:
             record = json.load(stored)
     except (OSError, ValueError):
         return False
-    return 'error' not in record and not any('error' in w for w in record['windows'])
+    return not any(_window_failed(w) for w in record['windows'])
 
 
 def _process(arguments):
-    return process_raster(*arguments)
+    """Process a raster in a worker, so that one failure does not stop the others."""
+    try:
+        return process_raster(*arguments)
+    except Exception:
+        return {'timestamp': str(arguments[0]), 'error': traceback.format_exc(limit=3), 'seconds': 0.0}
 
 
 def main(argv=None):
@@ -483,6 +509,9 @@ def main(argv=None):
     parser.add_argument('--overwrite', action='store_true', help='Remake rasters done without errors')
     args = parser.parse_args(argv)
 
+    os.makedirs(args.output, exist_ok=True)
+    if args.work is not None:
+        os.makedirs(args.work, exist_ok=True)
     rasters = list(args.rasters)
     for date in args.date:
         rasters.extend(list_rasters(date))
@@ -492,7 +521,7 @@ def main(argv=None):
     jobs = [(r, args.output, args.work, args.calibration) for r in rasters]
     with multiprocessing.Pool(args.processes) as pool:
         for record in pool.imap_unordered(_process, jobs):
-            failed = sum('error' in w for w in record.get('windows', []))
+            failed = sum(_window_failed(w) for w in record.get('windows', []))
             print(record['timestamp'], f"{record['seconds']} s", record.get('error', f'{failed} windows failed'), flush=True)
 
 

@@ -61,6 +61,10 @@ MIN_MEAN_PEAK_SNR = 5.0
 # A template line this close in Angstrom to a peak is taken to be that peak.
 LINE_MATCH = 0.05
 
+# A peak this close in Angstrom to a title's wavelength is taken to be the line
+# named in the title. Titles often give the window centre.
+TITLE_MATCH = 0.2
+
 
 @dataclass
 class WindowFit:
@@ -274,7 +278,9 @@ def choose_fit(title, low, high, wave, inten, errs):
         return None
     if not isinstance(target, tuple):
         template, parinfo = _generic_gaussian(target)
-        name = title.strip() if parse_title(title)[0] else f'Line at {target:.3f}'
+        ions, title_wave = parse_title(title)
+        named = ions and title_wave is not None and abs(target - title_wave) <= TITLE_MATCH
+        name = title.strip() if named else f'Line at {target:.3f}'
         return WindowFit(template, parinfo, 0, name, 'generic', True)
 
     holders = [(path, n_gauss, lines.index(target)) for path, n_gauss, lines in template_library()

@@ -266,7 +266,7 @@ def batch(files, lines_to_fit='all', ncpu='max', filter_chi2=None, save=True, ou
                     line_label = change_line_format(wininfo[iwin]['line_id'])
                 except ValueError:
                     # A title that is not a line, such as 'Fe IX_XI 188.350'.
-                    line_label = os.path.basename(str(template_to_fit)).split('.')[0]
+                    line_label = f"{os.path.basename(str(template_to_fit)).split('.')[0]}_win{iwin:02d}"
 
                 if skip_done and save and output_dir is not None:
                     resolved_dir = _resolve_output_dir(file, output_dir, output_dir_tree)
