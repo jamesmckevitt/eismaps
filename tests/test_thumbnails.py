@@ -355,7 +355,7 @@ def test_nonpositive_intensity_can_take_the_darkest_colour(tmp_path):
         path = tmp_path / f'{choice}.gif'
         render_thumbnail(image, (0, 1, 0, 1), ('x', 'y'), 't', 's', 'int', str(path), nonpositive=choice)
         with Image.open(path) as gif:
-            pixels = np.asarray(gif.convert('RGB'))
+            pixels = np.asarray(gif.convert('RGB')).astype(int)
         # Centre of the bottom rows of the map, and of the missing rows.
         left, bottom, width, height = MAP_AREA
         x = int((left + 0.5 * width) * 768)
