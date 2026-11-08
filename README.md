@@ -191,9 +191,9 @@ The quantities are:
 - `vel`: Doppler velocity from a Gaussian fit, relative to the median of each raster column. The median and the colour scale leave out pixels on a template limit.
 - `wid`: Gaussian width from the same fit.
 
-The line to fit is chosen from the window title. A single Gaussian is used unless a check on the window's mean spectrum shows that a neighbouring line changes the result, when the smallest EISPAC multi-component template with that line is used. Pixels with a peak below 3 times its error, or a parameter the fit did not constrain, are grey. Velocities and widths on a template limit are shown, unlike in `make_maps`, so that the fastest and broadest pixels of a flare are not lost. The true value of such a pixel is at or beyond the limit. Full-CCD windows get `int` only.
+The line to fit is chosen from the window title. A single Gaussian is used unless a check on the window's mean spectrum shows that a neighbouring line changes the result, when the smallest EISPAC multi-component template with that line is used. Pixels with a peak below 3 times its error, or a parameter the fit did not constrain, are grey. Summed intensities at or below zero are grey too, as the intensity scale is logarithmic. Velocities and widths on a template limit are shown, unlike in `make_maps`, so that the fastest and broadest pixels of a flare are not lost. The true value of such a pixel is at or beyond the limit. Full-CCD windows get `int` only.
 
-For a raster with several exposures per position, the longest exposure is used. Maps have the same arcsec scale in X and Y. A map with one side more than 8 times the other is stretched to that ratio, and says so in the corner of the image. For a sit-and-stare observation the X axis is time, and the map fills the image.
+For a raster with several exposures per position, the longest exposure is used. Maps have the same arcsec scale in X and Y. A map with one side more than 8 times the other is stretched to that ratio, and says so in the corner of the image. For a sit-and-stare observation the X axis is time, and the map fills the image. A map of a single exposure at a single slit position is one column wide, and is drawn as a strip as wide as the slit.
 
 From Python, for a raster already on disk:
 
@@ -209,6 +209,12 @@ From the command line, for rasters by time, for whole days, or for files:
 eismaps-solarb-thumbnails 20130116_093720 --output thumbnails
 eismaps-solarb-thumbnails --date 2013-01-16 --output thumbnails --processes 8
 ```
+
+Three options change which pixels are grey. They are keywords of `make_thumbnails()` and options of the command:
+
+- `min_peak_snr` (`--min-peak-snr`): smallest fitted peak, in units of its error, for a velocity or width to be shown. The default is 3, and 0 shows every fit with a positive peak.
+- `min_good_fraction` (`--min-good-fraction`): fraction of good points a pixel needs for its summed intensity. The default is 0.5. Missing points are taken to have the mean of the others.
+- `nonpositive` (`--nonpositive`): `'grey'` (default) draws summed intensities at or below zero like missing pixels, and `'darkest'` draws them in the lowest colour of the scale.
 
 Files are downloaded from the MSSL mirror, or from NRL if the mirror has no complete copy, and deleted afterwards. A JSON file beside each raster's thumbnails records the fit used for each window. Rasters done without errors are skipped unless `--overwrite` is given, and a raster that fails has its reason in a file ending in `.error`. Only rasters with level 1 HDF5 files can be processed, which leaves out the 40 and 266 arcsec slot observations.
 

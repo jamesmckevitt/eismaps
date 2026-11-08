@@ -10,8 +10,8 @@ from PIL import Image
 
 from eismaps.thumbnails import (MAP_AREA, _scale, fitted_maps, MAX_MAP_RATIO, _arcsec, _column_zero_point, _map_rectangle,
                                 _one_exposure_copy, _exposure_choice, _exposure_factor, _is_done,
-                                _process, _record_path, _summed_intensity, process_raster,
-                                render_thumbnail, RasterUnavailable, thumbnail_path)
+                                _axes, _process, _record_path, _slit_width, _summed_intensity, make_thumbnails,
+                                process_raster, render_thumbnail, RasterUnavailable, thumbnail_path)
 
 
 def test_path_follows_the_archive():
@@ -323,3 +323,88 @@ def test_all_blank_map_still_renders(tmp_path):
     path = tmp_path / 'b.gif'
     render_thumbnail(np.full((4, 4), np.nan), (0, 1, 0, 1), ('x', 'y'), 't', 's', 'int', str(path))
     assert path.exists()
+
+
+def test_peak_cut_can_be_lowered_or_removed():
+    fit = FakeFit()
+    fit.fit['params'][2, 0, 0] = 8.0
+    fit.fit['params'][3, 0, 0] = 2.0
+    assert np.isnan(fitted_maps(fit, 0)[0][2, 0])
+    velocity = fitted_maps(fit, 0, min_peak_snr=1.5)[0]
+    assert np.isfinite(velocity[2, 0]) and np.isnan(velocity[3, 0])
+    assert np.isfinite(fitted_maps(fit, 0, min_peak_snr=0)[0][3, 0])
+
+
+def test_good_fraction_can_be_lowered():
+    wave = np.arange(10.0)[None, None, :] * 0.0223 + np.zeros((1, 1, 1))
+    inten = np.full((1, 1, 10), 5.0)
+    errs = np.ones_like(inten)
+    errs[..., :7] = 0.0
+    assert np.isnan(_summed_intensity(wave, inten, errs)[0, 0])
+    assert np.allclose(_summed_intensity(wave, inten, errs, 0.25), 5.0 * 10 * 0.0223)
+    errs[...] = 0.0
+    assert np.isnan(_summed_intensity(wave, inten, errs, 1e-9)[0, 0])
+
+
+def test_nonpositive_intensity_can_take_the_darkest_colour(tmp_path):
+    image = np.full((20, 20), 100.0)
+    image[:5] = -3.0
+    image[5:8] = np.nan
+    colours = {}
+    for choice in ('grey', 'darkest'):
+        path = tmp_path / f'{choice}.gif'
+        render_thumbnail(image, (0, 1, 0, 1), ('x', 'y'), 't', 's', 'int', str(path), nonpositive=choice)
+        with Image.open(path) as gif:
+            pixels = np.asarray(gif.convert('RGB'))
+        # Centre of the bottom rows of the map, and of the missing rows.
+        left, bottom, width, height = MAP_AREA
+        x = int((left + 0.5 * width) * 768)
+        colours[choice] = (tuple(pixels[int((1 - bottom - 0.1 * height) * 768), x]),
+                           tuple(pixels[int((1 - bottom - 0.32 * height) * 768), x]))
+    assert colours['grey'][0] == colours['grey'][1]
+    assert colours['darkest'][0] != colours['darkest'][1]
+    assert sum(colours['darkest'][0]) < sum(colours['darkest'][1])
+
+
+def test_bad_options_are_refused():
+    for options in ({'min_peak_snr': -1}, {'min_good_fraction': 0}, {'min_good_fraction': 1.5},
+                    {'nonpositive': 'black'}):
+        with pytest.raises(ValueError):
+            make_thumbnails('eis_20170407_000335.data.h5', 'out', **options)
+
+
+class FakeSlitCube:
+    def __init__(self, slit_id):
+        self.meta = {'mod_index': {'slit_id': slit_id}}
+
+
+def test_slit_width_comes_from_the_header():
+    assert _slit_width(FakeSlitCube('1"')) == 1.0
+    assert _slit_width(FakeSlitCube('266"')) == 266.0
+    assert _slit_width(FakeSlitCube('')) is None
+
+
+class FakeWCS:
+    world_axis_physical_types = ['em.wl', 'custom:pos.helioprojective.lon', 'custom:pos.helioprojective.lat']
+
+    def pixel_to_world_values(self, wave, column, row):
+        return np.zeros(3), (-0.44 + 1.0 * np.asarray(column)) / 3600, (-1401.2 + np.asarray(row)) / 3600
+
+
+class FakeColumnCube:
+    """One exposure at one slit position, as in a full-CCD study."""
+
+    def __init__(self, columns=1):
+        self.data = np.zeros((512, columns, 1024))
+        self.wcs = FakeWCS()
+        self.meta = {'mod_index': {'slit_id': '1"', 'obs_type': 'sit-and-stare'},
+                     'date_obs': np.array(['2017-04-07T00:03:35'] * columns)}
+
+
+def test_one_column_is_a_strip_as_wide_as_the_slit():
+    extent, x_label, y_label, reverse, equal = _axes(FakeColumnCube())
+    assert extent[:2] == pytest.approx((-0.94, 0.06))
+    assert extent[2:] == pytest.approx((-1401.7, -889.7))
+    assert x_label == 'Solar-X (arcsec)' and equal and not reverse
+    left, bottom, width, height = _map_rectangle(extent, equal)
+    assert width / height == pytest.approx(1 / MAX_MAP_RATIO)

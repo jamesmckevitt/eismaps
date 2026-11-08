@@ -53,6 +53,11 @@ MIN_PEAK_SNR = 3.0
 # Pixels need this fraction of good points to have a summed intensity.
 MIN_GOOD_FRACTION = 0.5
 
+# How summed intensities at or below zero are drawn: 'grey' like missing
+# pixels, or 'darkest' in the lowest colour of the scale.
+NONPOSITIVE = 'grey'
+NONPOSITIVE_CHOICES = ('grey', 'darkest')
+
 # Fewest pixels of a raster column for its own median velocity, and the
 # fraction of the column they must be.
 MIN_COLUMN_PIXELS = 3
@@ -173,14 +178,18 @@ def _one_exposure_copy(data_file, directory):
     return head
 
 
-def _summed_intensity(wave, inten, errs):
-    """Return the intensity of each pixel summed over the window, in erg / (cm2 s sr)."""
+def _summed_intensity(wave, inten, errs, min_good_fraction=MIN_GOOD_FRACTION):
+    """Return the intensity of each pixel summed over the window, in erg / (cm2 s sr).
+
+    Pixels with less than `min_good_fraction` of their points good are NaN.
+    """
     good = errs > 0
     step = float(np.median(np.abs(np.diff(wave, axis=-1))))
     fraction = good.mean(axis=-1)
     summed = np.where(good, inten, 0.0).sum(axis=-1) * step
     # Missing points are taken to have the mean of the others.
-    return np.where(fraction >= MIN_GOOD_FRACTION, summed / np.maximum(fraction, MIN_GOOD_FRACTION), np.nan)
+    enough = (fraction >= min_good_fraction) & (fraction > 0)
+    return np.where(enough, summed / np.where(enough, fraction, 1.0), np.nan)
 
 
 def _mean_spectrum(wave, inten, errs):
@@ -227,11 +236,11 @@ def _column_zero_point(velocity):
     return np.interp(columns, columns[enough], medians)
 
 
-def fitted_maps(fit_res, component):
+def fitted_maps(fit_res, component, min_peak_snr=MIN_PEAK_SNR):
     """Return velocity and width maps of one component.
 
     Pixels are left out where the fit is not usable, the peak is below
-    `MIN_PEAK_SNR` errors, or the parameter is not constrained. Values on a
+    `min_peak_snr` errors, or the parameter is not constrained. Values on a
     template limit are kept, as these are often the fastest and broadest
     pixels of a flare, and the true value is then at or beyond the limit.
     :func:`eismaps.maps.measurement_mask` leaves them out for measurements.
@@ -243,6 +252,8 @@ def fitted_maps(fit_res, component):
         Fit of a window.
     component : int
         Gaussian to use.
+    min_peak_snr : float, default=3
+        Smallest peak in units of its error. 0 keeps every positive peak.
 
     Returns
     -------
@@ -254,7 +265,7 @@ def fitted_maps(fit_res, component):
     params, perror = fit_res.fit['params'], fit_res.fit['perror']
     peak, peak_error = params[:, :, 3 * component], perror[:, :, 3 * component]
     usable = (fit_res.fit['status'] > 0) & (peak > 0) & (peak_error > 0) & np.isfinite(fit_res.fit['chi2'])
-    usable &= peak >= MIN_PEAK_SNR * peak_error
+    usable &= peak >= min_peak_snr * peak_error
 
     centroid_index = 3 * component + 1
     has_error, on_limit = _parameter_state(fit_res, centroid_index)
@@ -275,11 +286,18 @@ def _arcsec(degrees):
     return (np.asarray(degrees) * 3600.0 + 648000.0) % 1296000.0 - 648000.0
 
 
+def _slit_width(cube):
+    """Return the slit width in arcsec, or None if the header does not give it."""
+    match = re.match(r'\s*(\d+(?:\.\d+)?)', str(cube.meta['mod_index'].get('slit_id', '')))
+    return float(match.group(1)) if match else None
+
+
 def _axes(cube):
     """Return the image extent and axis labels of a window.
 
     Solar-X and Solar-Y in arcsec come from the cube WCS, which holds the
-    pointing correction. Sit-and-stare observations have time along X.
+    pointing correction. Sit-and-stare observations have time along X. A map
+    of one column is drawn as a strip as wide as the slit.
 
     Returns
     -------
@@ -302,6 +320,10 @@ def _axes(cube):
     half_y = 0.5 * (world_y[1] - world_y[0])
     bottom, top = world_y[0] - half_y, world_y[2] + half_y
     y_label = 'Solar-Y (arcsec)'
+
+    slit = _slit_width(cube)
+    if n_x == 1 and slit:
+        return (world_x[0] - 0.5 * slit, world_x[0] + 0.5 * slit, bottom, top), 'Solar-X (arcsec)', y_label, False, True
 
     if cube.meta['mod_index'].get('obs_type') == 'sit-and-stare':
         times = np.array(cube.meta['date_obs'], dtype='datetime64[ms]')
@@ -357,7 +379,8 @@ def _map_rectangle(extent, equal):
     return left + 0.5 * (width - new_width), bottom, new_width, height
 
 
-def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, equal=False, scale_pixels=None):
+def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, equal=False, scale_pixels=None,
+                     nonpositive=NONPOSITIVE):
     """Write one thumbnail as a GIF.
 
     Parameters
@@ -378,9 +401,15 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, 
         Draw X and Y to the same scale, for axes in the same unit.
     scale_pixels : np.ndarray, optional
         True for the pixels that set the colour scale. All pixels by default.
+    nonpositive : str, default='grey'
+        For 'int', draw values at or below zero 'grey' like missing pixels,
+        or in the 'darkest' colour of the scale.
     """
     cmap_name, norm, label, extend = _scale(image if scale_pixels is None else image[scale_pixels], measurement)
     cmap = colormaps[cmap_name].with_extremes(bad='0.7')
+    if measurement == 'int' and nonpositive == 'darkest':
+        # Values below the scale take the colour of its low end.
+        image = np.where(np.isfinite(image) & (image <= 0), 0.5 * norm.vmin, image)
 
     size = THUMBNAIL_PIXELS / 100.0
     figure = Figure(figsize=(size, size), dpi=100)
@@ -421,7 +450,18 @@ def _calibration(date, wavelengths, method):
     return None
 
 
-def make_thumbnails(data_file, output_root, calibration='del_zanna_2025'):
+def _check_options(min_peak_snr, min_good_fraction, nonpositive):
+    """Raise ValueError if an option of :func:`make_thumbnails` is out of range."""
+    if not min_peak_snr >= 0:
+        raise ValueError(f'min_peak_snr must be 0 or more, not {min_peak_snr}')
+    if not 0 < min_good_fraction <= 1:
+        raise ValueError(f'min_good_fraction must be above 0 and at most 1, not {min_good_fraction}')
+    if nonpositive not in NONPOSITIVE_CHOICES:
+        raise ValueError(f'nonpositive must be one of {NONPOSITIVE_CHOICES}, not {nonpositive!r}')
+
+
+def make_thumbnails(data_file, output_root, calibration='del_zanna_2025', min_peak_snr=MIN_PEAK_SNR,
+                    min_good_fraction=MIN_GOOD_FRACTION, nonpositive=NONPOSITIVE):
     """Make the thumbnails of a raster.
 
     Parameters
@@ -433,30 +473,40 @@ def make_thumbnails(data_file, output_root, calibration='del_zanna_2025'):
     calibration : str, default='del_zanna_2025'
         Calibration of the intensities, one of
         :data:`eismaps.calibration.CALIBRATION_METHODS`.
+    min_peak_snr : float, default=3
+        Velocities and widths are shown where the fitted peak is at least
+        this many errors. 0 shows every fit with a positive peak.
+    min_good_fraction : float, default=0.5
+        Fraction of good points a pixel needs for its summed intensity.
+    nonpositive : str, default='grey'
+        Summed intensities at or below zero are drawn 'grey' like missing
+        pixels, or in the 'darkest' colour of the scale.
 
     Returns
     -------
     dict
-        Record of the raster: exposure used, and for each window its title,
-        fit and thumbnails, or the error if a window failed.
+        Record of the raster: exposure used, options, and for each window its
+        title, fit and thumbnails, or the error if a window failed.
     """
     if calibration not in CALIBRATION_METHODS:
         raise ValueError(f'Unknown calibration method: {calibration}. Choose from {sorted(CALIBRATION_METHODS)}')
+    _check_options(min_peak_snr, min_good_fraction, nonpositive)
+    options = {'min_peak_snr': min_peak_snr, 'min_good_fraction': min_good_fraction, 'nonpositive': nonpositive}
     exposure, reference_exposure, single_position = _exposure_choice(data_file)
     if single_position:
         with tempfile.TemporaryDirectory() as temporary:
             copy = _one_exposure_copy(data_file, temporary)
-            return _raster_thumbnails(copy, output_root, calibration, exposure, reference_exposure)
-    return _raster_thumbnails(data_file, output_root, calibration, exposure, reference_exposure)
+            return _raster_thumbnails(copy, output_root, calibration, exposure, reference_exposure, options)
+    return _raster_thumbnails(data_file, output_root, calibration, exposure, reference_exposure, options)
 
 
-def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_exposure):
+def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_exposure, options):
     """Make the thumbnails of a raster with a chosen exposure set, returning its record."""
     timestamp = _timestamp(data_file)
     wininfo = eispac.read_wininfo(data_file)
     date = f'{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}T{timestamp[9:11]}:{timestamp[11:13]}:{timestamp[13:15]}'
     record = {'timestamp': timestamp, 'exposure_set': exposure, 'reference_exposure': reference_exposure,
-              'calibration': calibration, 'windows': []}
+              'calibration': calibration, 'options': options, 'windows': []}
 
     for row in wininfo:
         iwin, title = int(row['iwin']), str(row['line_id'])
@@ -480,10 +530,12 @@ def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_
             factor = _calibration(date, (line_wave, 0.5 * (low + high)), calibration)
             entry['calibration_factor'] = factor
 
-            intensity = _summed_intensity(wave, inten, errs) * _exposure_factor(cube, reference_exposure)[None, :]
+            intensity = _summed_intensity(wave, inten, errs, options['min_good_fraction'])
+            intensity = intensity * _exposure_factor(cube, reference_exposure)[None, :]
             intensity = intensity * (1.0 if factor is None else factor)
             path = thumbnail_path(output_root, timestamp, iwin, title, 'int')
-            render_thumbnail(intensity[:, order], extent, labels, f'Intensity - {heading}', date, 'int', path, equal)
+            render_thumbnail(intensity[:, order], extent, labels, f'Intensity - {heading}', date, 'int', path, equal,
+                             nonpositive=options['nonpositive'])
             entry['files'].append(os.path.basename(path))
 
             if fit is None:
@@ -491,7 +543,7 @@ def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_
                 continue
             tolerance = TOLERANCE if int(fit.template['n_gauss']) <= 2 else DEGENERATE_TOLERANCE
             result = fit_cube(cube, fit.template, fit.parinfo, component=fit.component, tolerance=tolerance)
-            velocity, width, velocity_off_limit, width_off_limit = fitted_maps(result, fit.component)
+            velocity, width, velocity_off_limit, width_off_limit = fitted_maps(result, fit.component, options['min_peak_snr'])
             entry['fit'] = {'line': fit.line, 'source': fit.source, 'n_gauss': int(fit.template['n_gauss']),
                             'single': fit.single, 'intensity_ratio': fit.intensity_ratio,
                             'velocity_offset': fit.velocity_offset,
@@ -509,7 +561,8 @@ def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_
     return record
 
 
-def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='del_zanna_2025'):
+def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='del_zanna_2025',
+                   min_peak_snr=MIN_PEAK_SNR, min_good_fraction=MIN_GOOD_FRACTION, nonpositive=NONPOSITIVE):
     """Fetch a raster if needed, make its thumbnails and write its record.
 
     Parameters
@@ -522,6 +575,8 @@ def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='d
         Directory for downloads. A temporary directory by default.
     calibration : str, default='del_zanna_2025'
         Calibration of the intensities.
+    min_peak_snr, min_good_fraction, nonpositive
+        As for :func:`make_thumbnails`.
 
     Returns
     -------
@@ -536,7 +591,8 @@ def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='d
     with tempfile.TemporaryDirectory(dir=work_dir) as temporary:
         try:
             data_file = timestamp_or_file if local else fetch_raster(timestamp, temporary)
-            record = make_thumbnails(data_file, output_root, calibration)
+            record = make_thumbnails(data_file, output_root, calibration, min_peak_snr, min_good_fraction,
+                                     nonpositive)
         except RasterUnavailable as error:
             record = {'timestamp': timestamp, 'error': str(error)}
         except Exception:
@@ -589,8 +645,18 @@ def main(argv=None):
     parser.add_argument('--processes', type=int, default=1, help='Rasters to process at once')
     parser.add_argument('--calibration', default='del_zanna_2025', choices=CALIBRATION_METHODS,
                         help='Intensity calibration')
+    parser.add_argument('--min-peak-snr', type=float, default=MIN_PEAK_SNR,
+                        help='Smallest fitted peak, in units of its error, for velocity and width (0 for no cut)')
+    parser.add_argument('--min-good-fraction', type=float, default=MIN_GOOD_FRACTION,
+                        help='Fraction of good points a pixel needs for its summed intensity')
+    parser.add_argument('--nonpositive', default=NONPOSITIVE, choices=NONPOSITIVE_CHOICES,
+                        help='Colour of summed intensities at or below zero')
     parser.add_argument('--overwrite', action='store_true', help='Remake rasters done without errors')
     args = parser.parse_args(argv)
+    try:
+        _check_options(args.min_peak_snr, args.min_good_fraction, args.nonpositive)
+    except ValueError as error:
+        parser.error(str(error))
 
     os.makedirs(args.output, exist_ok=True)
     if args.work is not None:
@@ -606,7 +672,8 @@ def main(argv=None):
     if not args.overwrite:
         rasters = [r for r in rasters if not _is_done(args.output, r)]
 
-    jobs = [(r, args.output, args.work, args.calibration) for r in rasters]
+    jobs = [(r, args.output, args.work, args.calibration, args.min_peak_snr, args.min_good_fraction, args.nonpositive)
+            for r in rasters]
     with multiprocessing.Pool(args.processes) as pool:
         for record in pool.imap_unordered(_process, jobs):
             failed = sum(_window_failed(w) for w in record.get('windows', []))
