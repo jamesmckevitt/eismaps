@@ -10,8 +10,8 @@ from PIL import Image
 
 from eismaps.thumbnails import (MAP_AREA, _scale, fitted_maps, MAX_MAP_RATIO, _arcsec, _column_zero_point, _map_rectangle,
                                 _one_exposure_copy, _exposure_choice, _exposure_factor, _is_done,
-                                _axes, _process, _record_path, _slit_width, _summed_intensity, make_thumbnails,
-                                process_raster, render_thumbnail, RasterUnavailable, thumbnail_path)
+                                _axes, _count_rates, _detector_norm, _is_full_ccd, _process, _record_path, _slit_width,
+                                _summed_intensity, make_thumbnails, process_raster, render_full_ccd, render_thumbnail, RasterUnavailable, thumbnail_path)
 
 
 def test_path_follows_the_archive():
@@ -408,3 +408,54 @@ def test_one_column_is_a_strip_as_wide_as_the_slit():
     assert x_label == 'Solar-X (arcsec)' and equal and not reverse
     left, bottom, width, height = _map_rectangle(extent, equal)
     assert width / height == pytest.approx(1 / MAX_MAP_RATIO)
+
+
+def test_full_ccd_windows():
+    assert _is_full_ccd('CCDBSHRT 0 177.540', 1024)
+    assert _is_full_ccd('CCDBSHRT 0 178.880', 904)
+    assert _is_full_ccd('FE XII 195.120', 1024)
+    assert _is_full_ccd('ccdbsmod 0 181.750', 672)
+    assert not _is_full_ccd('Fe XII 195.120', 272)
+    assert not _is_full_ccd('Fe XII 195.120', 32)
+    assert not _is_full_ccd('LINE 3  ', 200)
+
+
+class FakeCounts:
+    def __init__(self, duration):
+        self.data = np.full((2, len(duration), 3), 30.0)
+        self.meta = {'duration': np.asarray(duration, dtype=float)}
+
+
+def test_count_rates_use_the_exposure_of_each_column():
+    errs = np.ones((2, 3, 3))
+    errs[0, 0, 1] = 0.0
+    rate = _count_rates(FakeCounts([10.0, 30.0, 0.0]), errs)
+    assert rate[1, 0, 0] == 3.0 and rate[1, 1, 0] == 1.0
+    assert np.isnan(rate[0, 0, 1])
+    assert np.isnan(rate[:, 2]).all()
+
+
+def test_count_rates_need_an_exposure_for_each_column():
+    with pytest.raises(ValueError):
+        _count_rates(FakeCounts([10.0, 30.0]), np.ones((2, 3, 3)))
+
+
+def test_detector_scale_ignores_hot_pixels():
+    image = np.random.default_rng(1).uniform(0.5, 1.5, size=(100, 100))
+    # 9 of 10000 pixels, below the 0.1% that the scale leaves out.
+    image[:3, :3] = 1e5
+    norm = _detector_norm(image)
+    assert norm.vmax < 1e5 and 0.5 < norm.vmin < 1.5
+
+
+def test_full_ccd_thumbnails_render(tmp_path):
+    rate = np.random.default_rng(1).normal(1.0, 1.0, size=(50, 1, 64))
+    rate[3, 0, 3] = np.nan
+    wavelength = 170.0 + 0.0223 * np.arange(64)
+    for name, data, extent, equal in (('one', rate, (-1, 1, 0, 50), True),
+                                      ('many', np.repeat(rate, 6, axis=1), (0, 12, 0, 50), True),
+                                      ('blank', np.full((50, 6, 64), np.nan), (0, 12, 0, 50), False)):
+        path = tmp_path / f'{name}.gif'
+        render_full_ccd(data, wavelength, extent, ('x', 'y'), 't', 's', str(path), equal)
+        with Image.open(path) as gif:
+            assert gif.size == (768, 768)

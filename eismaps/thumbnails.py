@@ -5,7 +5,8 @@ directory layout and with the file names of the archive::
 
     YYYY/MM/DD/eis_l0_<time>.fits/eis_l0_<time>.fits_line_NN_<title>.<qty>.gif
 
-`int` is the window summed over wavelength, so it exists for every window.
+`int` is the window summed over wavelength, so it exists for every window. For
+a full-CCD window it shows the detector image and mean spectrum in DN/s instead.
 `vel` and `wid` come from Gaussian fits of the window's line. Velocities are
 relative to the median of each raster column, which removes the drift left by
 the wavelength correction. A JSON file records what was done for each window.
@@ -32,12 +33,13 @@ import numpy as np
 from matplotlib import colormaps
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from matplotlib.ticker import LogLocator, MaxNLocator, NullFormatter
 from PIL import Image
 
 from eismaps.archive import RasterUnavailable, fetch_raster, list_rasters
 from eismaps.batched_fit import cube_arrays, fit_cube
 from eismaps.calibration import CALIBRATION_METHODS, calibration_factor
-from eismaps.windows import choose_fit, parse_title
+from eismaps.windows import MAX_FIT_PIXELS, choose_fit, parse_title
 
 CC = 2.9979E+5  # speed of light in km/s
 THUMBNAIL_PIXELS = 768
@@ -55,8 +57,13 @@ MIN_GOOD_FRACTION = 0.5
 
 # How summed intensities at or below zero are drawn: 'grey' like missing
 # pixels, or 'darkest' in the lowest colour of the scale.
-NONPOSITIVE = 'grey'
+NONPOSITIVE = 'darkest'
 NONPOSITIVE_CHOICES = ('grey', 'darkest')
+
+# Windows at least this wide are full-CCD readouts, even if named after a line.
+# The widest window named after a line is 744 pixels and the narrowest full-CCD
+# readout is 904.
+FULL_CCD_PIXELS = 900
 
 # Fewest pixels of a raster column for its own median velocity, and the
 # fraction of the column they must be.
@@ -75,6 +82,15 @@ MAX_MAP_RATIO = 8.0
 
 # Shortest colour bar, as a fraction of the thumbnail height.
 MIN_BAR_HEIGHT = 0.4
+
+# Panels of a full-CCD thumbnail, as left, bottom, width and height.
+FULL_CCD_MAP_PANEL = (0.11, 0.70, 0.70, 0.20)
+FULL_CCD_PANELS = {True: ((0.11, 0.41, 0.70, 0.21), (0.11, 0.09, 0.70, 0.23)),
+                   False: ((0.11, 0.47, 0.70, 0.41), (0.11, 0.09, 0.70, 0.29))}
+
+# Percentiles of the positive pixels that set the colour scale of a detector
+# image. Most pixels hold no line, and a few are hot or hit by cosmic rays.
+DETECTOR_PERCENTILES = (50.0, 99.9)
 
 
 def _timestamp(name):
@@ -142,7 +158,7 @@ def _exposure_factor(cube, reference):
     return np.where(duration > 0, reference / np.where(duration > 0, duration, 1.0), np.nan)
 
 
-def _read_cube(data_file, iwin, exposure):
+def _read_cube(data_file, iwin, exposure, apply_radcal=True):
     """Read a window without EISPAC's messages.
 
     Raises
@@ -153,9 +169,9 @@ def _read_cube(data_file, iwin, exposure):
     messages = io.StringIO()
     with contextlib.redirect_stdout(messages), contextlib.redirect_stderr(messages):
         if exposure is None:
-            cube = eispac.read_cube(data_file, iwin)
+            cube = eispac.read_cube(data_file, iwin, apply_radcal=apply_radcal)
         else:
-            cube = eispac.read_cube(data_file, iwin, exp_set=exposure)
+            cube = eispac.read_cube(data_file, iwin, exp_set=exposure, apply_radcal=apply_radcal)
     if cube is None:
         raise ValueError(f'EISPAC could not read window {iwin}: {messages.getvalue()[-200:]}')
     return cube
@@ -178,18 +194,59 @@ def _one_exposure_copy(data_file, directory):
     return head
 
 
+def _window_sum(values, good, min_good_fraction):
+    """Return each spectrum summed over wavelength, NaN with too few good points.
+
+    Missing points are taken to have the mean of the others.
+    """
+    fraction = good.mean(axis=-1)
+    summed = np.where(good, values, 0.0).sum(axis=-1)
+    enough = (fraction >= min_good_fraction) & (fraction > 0)
+    return np.where(enough, summed / np.where(enough, fraction, 1.0), np.nan)
+
+
 def _summed_intensity(wave, inten, errs, min_good_fraction=MIN_GOOD_FRACTION):
     """Return the intensity of each pixel summed over the window, in erg / (cm2 s sr).
 
     Pixels with less than `min_good_fraction` of their points good are NaN.
     """
-    good = errs > 0
     step = float(np.median(np.abs(np.diff(wave, axis=-1))))
-    fraction = good.mean(axis=-1)
-    summed = np.where(good, inten, 0.0).sum(axis=-1) * step
-    # Missing points are taken to have the mean of the others.
-    enough = (fraction >= min_good_fraction) & (fraction > 0)
-    return np.where(enough, summed / np.where(enough, fraction, 1.0), np.nan)
+    return _window_sum(inten, errs > 0, min_good_fraction) * step
+
+
+def _is_full_ccd(title, n_wave):
+    """Return True for a window drawn as a detector image and spectrum.
+
+    These are full-CCD readouts, and wide windows named after no line.
+    """
+    return n_wave >= FULL_CCD_PIXELS or (n_wave > MAX_FIT_PIXELS and not parse_title(title)[0])
+
+
+def _count_rates(counts, errs):
+    """Return a window in DN/s, with NaN for bad points.
+
+    Parameters
+    ----------
+    counts : eispac.EISCube
+        Window read without the radiometric calibration.
+    errs : np.ndarray
+        Errors of the window, zero or negative for bad points.
+
+    Returns
+    -------
+    np.ndarray
+        DN/s, shape (n_y, n_x, n_wave).
+
+    Raises
+    ------
+    ValueError
+        If the header has no exposure time for each raster column.
+    """
+    duration = np.asarray(counts.meta['duration'], dtype=float)
+    if duration.size != counts.data.shape[1]:
+        raise ValueError(f'{duration.size} exposure times for {counts.data.shape[1]} raster columns')
+    per_second = np.where(duration > 0, 1.0 / np.where(duration > 0, duration, 1.0), np.nan)
+    return np.where(errs > 0, np.asarray(counts.data, dtype=float), np.nan) * per_second[None, :, None]
 
 
 def _mean_spectrum(wave, inten, errs):
@@ -361,13 +418,13 @@ def _map_ratio(extent):
     return float(width / height)
 
 
-def _map_rectangle(extent, equal):
+def _map_rectangle(extent, equal, area=MAP_AREA):
     """Return the left, bottom, width and height of a map in a square thumbnail.
 
-    With `equal`, the sides follow the extent, centred in `MAP_AREA`, so that
-    an arcsec has the same length in X and Y. Otherwise the map fills the area.
+    With `equal`, the sides follow the extent, centred in `area`, so that an
+    arcsec has the same length in X and Y. Otherwise the map fills the area.
     """
-    left, bottom, width, height = MAP_AREA
+    left, bottom, width, height = area
     ratio = _map_ratio(extent)
     if not equal or ratio is None:
         return left, bottom, width, height
@@ -377,6 +434,28 @@ def _map_rectangle(extent, equal):
         return left, bottom + 0.5 * (height - new_height), width, new_height
     new_width = height * ratio
     return left + 0.5 * (width - new_width), bottom, new_width, height
+
+
+def _apply_nonpositive(image, norm, nonpositive):
+    """Return an image for a logarithmic scale with values at or below zero drawn as chosen."""
+    if nonpositive != 'darkest':
+        return image
+    # Values below the scale take the colour of its low end.
+    return np.where(np.isfinite(image) & (image <= 0), 0.5 * norm.vmin, image)
+
+
+def _add_version_note(figure):
+    """Write the versions of the software in the corner of a thumbnail."""
+    figure.text(0.995, 0.005, f"eismaps {version('eismaps')}, eispac {version('eispac')}",
+                ha='right', va='bottom', fontsize=7, color='0.55')
+
+
+def _write_gif(canvas, path):
+    """Write a figure as a GIF."""
+    canvas.draw()
+    pixels = np.asarray(canvas.buffer_rgba())[:, :, :3]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    Image.fromarray(pixels).quantize(colors=256, dither=Image.Dither.NONE).save(path, format='GIF')
 
 
 def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, equal=False, scale_pixels=None,
@@ -401,15 +480,14 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, 
         Draw X and Y to the same scale, for axes in the same unit.
     scale_pixels : np.ndarray, optional
         True for the pixels that set the colour scale. All pixels by default.
-    nonpositive : str, default='grey'
+    nonpositive : str, default='darkest'
         For 'int', draw values at or below zero 'grey' like missing pixels,
         or in the 'darkest' colour of the scale.
     """
     cmap_name, norm, label, extend = _scale(image if scale_pixels is None else image[scale_pixels], measurement)
     cmap = colormaps[cmap_name].with_extremes(bad='0.7')
-    if measurement == 'int' and nonpositive == 'darkest':
-        # Values below the scale take the colour of its low end.
-        image = np.where(np.isfinite(image) & (image <= 0), 0.5 * norm.vmin, image)
+    if measurement == 'int':
+        image = _apply_nonpositive(image, norm, nonpositive)
 
     size = THUMBNAIL_PIXELS / 100.0
     figure = Figure(figsize=(size, size), dpi=100)
@@ -424,16 +502,100 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, 
     axes.set_xlabel(labels[0])
     axes.set_ylabel(labels[1])
     figure.suptitle(f'{title}\n{subtitle}', fontsize=11)
-    figure.text(0.995, 0.005, f"eismaps {version('eismaps')}, eispac {version('eispac')}",
-                ha='right', va='bottom', fontsize=7, color='0.55')
+    _add_version_note(figure)
     ratio = _map_ratio(extent)
     if equal and ratio is not None and not 1.0 / MAX_MAP_RATIO <= ratio <= MAX_MAP_RATIO:
         figure.text(0.005, 0.005, 'X and Y scales differ', ha='left', va='bottom', fontsize=7, color='0.55')
+    _write_gif(canvas, path)
 
-    canvas.draw()
-    pixels = np.asarray(canvas.buffer_rgba())[:, :, :3]
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    Image.fromarray(pixels).quantize(colors=256, dither=Image.Dither.NONE).save(path, format='GIF')
+
+def _detector_norm(image):
+    """Return the logarithmic colour normalisation of a detector image."""
+    positive = image[np.isfinite(image) & (image > 0)]
+    low, high = np.percentile(positive, DETECTOR_PERCENTILES) if positive.size else (1.0, 10.0)
+    return mcolor.LogNorm(vmin=low, vmax=max(high, low * 10.0))
+
+
+def _mean_of_good(values, axis):
+    """Return the mean over an axis of the finite values, NaN where there are none."""
+    good = np.isfinite(values)
+    count = good.sum(axis=axis)
+    return np.where(count > 0, np.where(good, values, 0.0).sum(axis=axis) / np.maximum(count, 1), np.nan)
+
+
+def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equal=False,
+                    min_good_fraction=MIN_GOOD_FRACTION, nonpositive=NONPOSITIVE):
+    """Write the thumbnail of a full-CCD window as a GIF.
+
+    It shows the detector image and the spectrum, both averaged over the
+    raster columns, and above them a map of the window sum if there is more
+    than one column.
+
+    Parameters
+    ----------
+    rate : np.ndarray
+        Window in DN/s, shape (n_y, n_x, n_wave), with NaN for bad points.
+    wavelength : np.ndarray
+        Wavelength in Angstrom, shape (n_wave,).
+    extent : tuple
+        Left, right, bottom and top of the map.
+    labels : tuple of str
+        X and Y axis labels of the map.
+    title, subtitle : str
+        First and second lines of the title.
+    path : str
+        Output file.
+    equal : bool, default=False
+        Draw the map with X and Y to the same scale.
+    min_good_fraction : float, default=0.5
+        Fraction of good points a pixel of the map needs.
+    nonpositive : str, default='darkest'
+        Draw values at or below zero 'grey' like missing pixels, or in the
+        'darkest' colour of the scale.
+    """
+    size = THUMBNAIL_PIXELS / 100.0
+    figure = Figure(figsize=(size, size), dpi=100)
+    canvas = FigureCanvasAgg(figure)
+    cmap = colormaps['gist_heat'].with_extremes(bad='0.7')
+
+    def show(image, norm, rectangle, image_extent, bar_label):
+        left, bottom, width, height = rectangle
+        axes = figure.add_axes(rectangle)
+        bar = figure.add_axes([left + width + 0.03, bottom, 0.03, height])
+        shown = axes.imshow(_apply_nonpositive(image, norm, nonpositive), origin='lower', aspect='auto',
+                            extent=image_extent, cmap=cmap, norm=norm, interpolation='nearest')
+        colorbar = figure.colorbar(shown, cax=bar, label=bar_label, extend='both')
+        # The bars are short, so only values of 1 and 3 times a power of ten are labelled.
+        colorbar.ax.yaxis.set_major_locator(LogLocator(subs=(1.0, 3.0), numticks=8))
+        colorbar.ax.yaxis.set_minor_formatter(NullFormatter())
+        return axes
+
+    has_map = rate.shape[1] > 1
+    if has_map:
+        window_sum = _window_sum(rate, np.isfinite(rate), min_good_fraction)
+        rectangle = _map_rectangle(extent, equal, FULL_CCD_MAP_PANEL)
+        axes = show(window_sum, _scale(window_sum, 'int')[1], rectangle, extent, 'DN/s')
+        axes.xaxis.set_major_locator(MaxNLocator(nbins=3))
+        axes.set_xlabel(labels[0], labelpad=1)
+        axes.set_ylabel(labels[1])
+
+    step = float(np.median(np.abs(np.diff(wavelength))))
+    edges = (wavelength[0] - 0.5 * step, wavelength[-1] + 0.5 * step)
+    detector_panel, spectrum_panel = FULL_CCD_PANELS[has_map]
+    detector = _mean_of_good(rate, 1)
+    axes = show(detector, _detector_norm(detector), detector_panel, (*edges, extent[2], extent[3]), 'DN/s per pixel')
+    axes.set_xlabel('Wavelength ($\\AA$)', labelpad=1)
+    axes.set_ylabel(labels[1])
+
+    axes = figure.add_axes(spectrum_panel)
+    axes.plot(wavelength, _mean_of_good(rate, (0, 1)), color='k', linewidth=0.6)
+    axes.set_xlim(*edges)
+    axes.set_xlabel('Wavelength ($\\AA$)')
+    axes.set_ylabel('Mean DN/s per pixel')
+
+    figure.suptitle(f'{title}\n{subtitle}', fontsize=11)
+    _add_version_note(figure)
+    _write_gif(canvas, path)
 
 
 def _calibration(date, wavelengths, method):
@@ -478,7 +640,7 @@ def make_thumbnails(data_file, output_root, calibration='del_zanna_2025', min_pe
         this many errors. 0 shows every fit with a positive peak.
     min_good_fraction : float, default=0.5
         Fraction of good points a pixel needs for its summed intensity.
-    nonpositive : str, default='grey'
+    nonpositive : str, default='darkest'
         Summed intensities at or below zero are drawn 'grey' like missing
         pixels, or in the 'darkest' colour of the scale.
 
@@ -520,6 +682,15 @@ def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_
             order = slice(None, None, -1) if reverse else slice(None)
             labels = (x_label, y_label)
             heading = f'{title.strip()} [{low:.2f}-{high:.2f} $\\AA$]'
+
+            if _is_full_ccd(title, wave.shape[-1]):
+                rate = _count_rates(_read_cube(data_file, iwin, exposure, apply_radcal=False), errs)
+                path = thumbnail_path(output_root, timestamp, iwin, title, 'int')
+                render_full_ccd(rate[:, order], wave.mean(axis=(0, 1)), extent, labels, f'Spectrum - {heading}', date, path,
+                                equal, options['min_good_fraction'], options['nonpositive'])
+                entry.update(fit=None, layout='full_ccd', units='DN/s')
+                entry['files'].append(os.path.basename(path))
+                continue
 
             fit = None
             try:
