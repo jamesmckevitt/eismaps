@@ -8,10 +8,12 @@ import numpy as np
 import pytest
 from PIL import Image
 
+import eismaps.thumbnails as thumbnails
+
 from eismaps.thumbnails import (MAP_AREA, _scale, fitted_maps, MAX_MAP_RATIO, _arcsec, _column_zero_point, _map_rectangle,
                                 _one_exposure_copy, _exposure_choice, _exposure_factor, _is_done,
-                                _process, _record_path, _summed_intensity, process_raster,
-                                render_thumbnail, RasterUnavailable, thumbnail_path)
+                                _axes, _count_rates, _detector_norm, _is_full_ccd, _process, _record_path, _slit_width,
+                                _summed_intensity, make_thumbnails, process_raster, render_full_ccd, render_thumbnail, RasterUnavailable, thumbnail_path)
 
 
 def test_path_follows_the_archive():
@@ -323,3 +325,168 @@ def test_all_blank_map_still_renders(tmp_path):
     path = tmp_path / 'b.gif'
     render_thumbnail(np.full((4, 4), np.nan), (0, 1, 0, 1), ('x', 'y'), 't', 's', 'int', str(path))
     assert path.exists()
+
+
+def test_peak_cut_can_be_lowered_or_removed():
+    fit = FakeFit()
+    fit.fit['params'][2, 0, 0] = 8.0
+    fit.fit['params'][3, 0, 0] = 2.0
+    assert np.isnan(fitted_maps(fit, 0)[0][2, 0])
+    velocity = fitted_maps(fit, 0, min_peak_snr=1.5)[0]
+    assert np.isfinite(velocity[2, 0]) and np.isnan(velocity[3, 0])
+    assert np.isfinite(fitted_maps(fit, 0, min_peak_snr=0)[0][3, 0])
+
+
+def test_good_fraction_can_be_lowered():
+    wave = np.arange(10.0)[None, None, :] * 0.0223 + np.zeros((1, 1, 1))
+    inten = np.full((1, 1, 10), 5.0)
+    errs = np.ones_like(inten)
+    errs[..., :7] = 0.0
+    assert np.isnan(_summed_intensity(wave, inten, errs)[0, 0])
+    assert np.allclose(_summed_intensity(wave, inten, errs, 0.25), 5.0 * 10 * 0.0223)
+    errs[...] = 0.0
+    assert np.isnan(_summed_intensity(wave, inten, errs, 1e-9)[0, 0])
+
+
+def test_nonpositive_intensity_can_take_the_darkest_colour(tmp_path):
+    image = np.full((20, 20), 100.0)
+    image[:5] = -3.0
+    image[5:8] = np.nan
+    colours = {}
+    for choice in ('grey', 'darkest'):
+        path = tmp_path / f'{choice}.gif'
+        render_thumbnail(image, (0, 1, 0, 1), ('x', 'y'), 't', 's', 'int', str(path), nonpositive=choice)
+        with Image.open(path) as gif:
+            pixels = np.asarray(gif.convert('RGB')).astype(int)
+        # Centre of the bottom rows of the map, and of the missing rows.
+        left, bottom, width, height = MAP_AREA
+        x = int((left + 0.5 * width) * 768)
+        colours[choice] = (tuple(pixels[int((1 - bottom - 0.1 * height) * 768), x]),
+                           tuple(pixels[int((1 - bottom - 0.32 * height) * 768), x]))
+    assert colours['grey'][0] == colours['grey'][1]
+    assert colours['darkest'][0] != colours['darkest'][1]
+    assert sum(colours['darkest'][0]) < sum(colours['darkest'][1])
+
+
+def test_bad_options_are_refused():
+    for options in ({'min_peak_snr': -1}, {'min_good_fraction': 0}, {'min_good_fraction': 1.5},
+                    {'nonpositive': 'black'}):
+        with pytest.raises(ValueError):
+            make_thumbnails('eis_20170407_000335.data.h5', 'out', **options)
+
+
+class FakeSlitCube:
+    def __init__(self, slit_id):
+        self.meta = {'mod_index': {'slit_id': slit_id}}
+
+
+def test_slit_width_comes_from_the_header():
+    assert _slit_width(FakeSlitCube('1"')) == 1.0
+    assert _slit_width(FakeSlitCube('266"')) == 266.0
+    assert _slit_width(FakeSlitCube('')) is None
+
+
+class FakeWCS:
+    world_axis_physical_types = ['em.wl', 'custom:pos.helioprojective.lon', 'custom:pos.helioprojective.lat']
+
+    def pixel_to_world_values(self, wave, column, row):
+        return np.zeros(3), (-0.44 + 1.0 * np.asarray(column)) / 3600, (-1401.2 + np.asarray(row)) / 3600
+
+
+class FakeColumnCube:
+    """One exposure at one slit position, as in a full-CCD study."""
+
+    def __init__(self, columns=1):
+        self.data = np.zeros((512, columns, 1024))
+        self.wcs = FakeWCS()
+        self.meta = {'mod_index': {'slit_id': '1"', 'obs_type': 'sit-and-stare'},
+                     'date_obs': np.array(['2017-04-07T00:03:35'] * columns)}
+
+
+def test_one_column_is_a_strip_as_wide_as_the_slit():
+    extent, x_label, y_label, reverse, equal = _axes(FakeColumnCube())
+    assert extent[:2] == pytest.approx((-0.94, 0.06))
+    assert extent[2:] == pytest.approx((-1401.7, -889.7))
+    assert x_label == 'Solar-X (arcsec)' and equal and not reverse
+    left, bottom, width, height = _map_rectangle(extent, equal)
+    assert width / height == pytest.approx(1 / MAX_MAP_RATIO)
+
+
+def test_full_ccd_windows():
+    assert _is_full_ccd('CCDBSHRT 0 177.540', 1024)
+    assert _is_full_ccd('CCDBSHRT 0 178.880', 904)
+    assert _is_full_ccd('FE XII 195.120', 1024)
+    assert _is_full_ccd('ccdbsmod 0 181.750', 672)
+    assert not _is_full_ccd('Fe XII 195.120', 272)
+    assert not _is_full_ccd('Fe XII 195.120', 32)
+    assert not _is_full_ccd('LINE 3  ', 200)
+
+
+class FakeCounts:
+    def __init__(self, duration):
+        self.data = np.full((2, len(duration), 3), 30.0)
+        self.meta = {'duration': np.asarray(duration, dtype=float)}
+
+
+def test_count_rates_use_the_exposure_of_each_column():
+    errs = np.ones((2, 3, 3))
+    errs[0, 0, 1] = 0.0
+    rate = _count_rates(FakeCounts([10.0, 30.0, 0.0]), errs)
+    assert rate[1, 0, 0] == 3.0 and rate[1, 1, 0] == 1.0
+    assert np.isnan(rate[0, 0, 1])
+    assert np.isnan(rate[:, 2]).all()
+
+
+def test_count_rates_need_an_exposure_for_each_column():
+    with pytest.raises(ValueError):
+        _count_rates(FakeCounts([10.0, 30.0]), np.ones((2, 3, 3)))
+
+
+def test_detector_scale_ignores_hot_pixels():
+    image = np.random.default_rng(1).uniform(0.5, 1.5, size=(100, 100))
+    # 9 of 10000 pixels, below the 0.1% that the scale leaves out.
+    image[:3, :3] = 1e5
+    norm = _detector_norm(image)
+    assert norm.vmax < 1e5 and 0.5 < norm.vmin < 1.5
+
+
+def test_full_ccd_thumbnails_render(tmp_path):
+    rate = np.random.default_rng(1).normal(1.0, 1.0, size=(50, 1, 64))
+    rate[3, 0, 3] = np.nan
+    wavelength = 170.0 + 0.0223 * np.arange(64)
+    for name, data, extent, equal in (('one', rate, (-1, 1, 0, 50), True),
+                                      ('many', np.repeat(rate, 6, axis=1), (0, 12, 0, 50), True),
+                                      ('blank', np.full((50, 6, 64), np.nan), (0, 12, 0, 50), False)):
+        path = tmp_path / f'{name}.gif'
+        render_full_ccd(data, wavelength, extent, ('x', 'y'), 't', 's', str(path), equal)
+        with Image.open(path) as gif:
+            assert gif.size == (768, 768)
+
+
+def test_full_ccd_window_uses_uncalibrated_rates_in_time_order(tmp_path, monkeypatch):
+    # Columns of 10 s and 30 s with 30 photons give 3 and 1 photons/s, reversed to run forwards in time.
+    counts = FakeCounts([10.0, 30.0])
+    counts.data = np.full((2, 2, 1024), 30.0)
+    wave = np.tile(170.0 + 0.0223 * np.arange(1024), (2, 2, 1))
+    wininfo = np.array([(0, 'CCDBSHRT 0 177.540', 166.0, 189.0)],
+                       dtype=[('iwin', int), ('line_id', 'U32'), ('wvl_min', float), ('wvl_max', float)])
+    radcal, drawn = [], {}
+
+    def read(data_file, iwin, exposure, apply_radcal=True):
+        radcal.append(apply_radcal)
+        return counts
+
+    def draw(rate, wavelength, *args):
+        drawn.update(rate=rate, wavelength=wavelength)
+
+    monkeypatch.setattr(thumbnails.eispac, 'read_wininfo', lambda data_file: wininfo)
+    monkeypatch.setattr(thumbnails, '_read_cube', read)
+    monkeypatch.setattr(thumbnails, 'cube_arrays', lambda cube: (wave, cube.data, np.ones_like(cube.data)))
+    monkeypatch.setattr(thumbnails, '_axes', lambda cube: ((0, 1, 0, 1), 'x', 'y', True, False))
+    monkeypatch.setattr(thumbnails, 'render_full_ccd', draw)
+    options = {'min_peak_snr': 3.0, 'min_good_fraction': 0.5, 'nonpositive': 'darkest'}
+    record = thumbnails._raster_thumbnails('eis_20170407_000335.data.h5', str(tmp_path), 'del_zanna_2025', None, 300.0, options)
+    assert radcal == [True, False]
+    assert drawn['rate'][0, :, 0].tolist() == [1.0, 3.0]
+    assert drawn['wavelength'].shape == (1024,)
+    assert record['windows'][0]['units'] == 'photons/s' and record['windows'][0]['fit'] is None
