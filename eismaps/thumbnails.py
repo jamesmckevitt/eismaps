@@ -88,6 +88,9 @@ FULL_CCD_MAP_PANEL = (0.11, 0.70, 0.70, 0.20)
 FULL_CCD_PANELS = {True: ((0.11, 0.41, 0.70, 0.21), (0.11, 0.09, 0.70, 0.23)),
                    False: ((0.11, 0.47, 0.70, 0.41), (0.11, 0.09, 0.70, 0.29))}
 
+# Maps narrower than this fraction of the thumbnail have one X tick, to keep its label clear.
+MIN_LABELLED_MAP_WIDTH = 0.12
+
 # Percentiles of the positive pixels that set the colour scale of a detector
 # image. Most pixels hold no line, and a few are hot or hit by cosmic rays.
 DETECTOR_PERCENTILES = (50.0, 99.9)
@@ -580,7 +583,10 @@ def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equ
         window_sum = _window_sum(rate, np.isfinite(rate), min_good_fraction)
         rectangle = _map_rectangle(extent, equal, FULL_CCD_MAP_PANEL)
         axes = show(window_sum, _scale(window_sum, 'int')[1], rectangle, extent, 'Photons/s')
-        axes.xaxis.set_major_locator(MaxNLocator(nbins=3))
+        if rectangle[2] < MIN_LABELLED_MAP_WIDTH:
+            axes.set_xticks([0.5 * (extent[0] + extent[1])])
+        else:
+            axes.xaxis.set_major_locator(MaxNLocator(nbins=3))
         axes.set_xlabel(labels[0], labelpad=1)
         axes.set_ylabel(labels[1])
         _add_stretch_note(figure, extent, equal)
