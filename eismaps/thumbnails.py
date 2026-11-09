@@ -6,7 +6,7 @@ directory layout and with the file names of the archive::
     YYYY/MM/DD/eis_l0_<time>.fits/eis_l0_<time>.fits_line_NN_<title>.<qty>.gif
 
 `int` is the window summed over wavelength, so it exists for every window. For
-a full-CCD window it shows the detector image and mean spectrum in DN/s instead.
+a full-CCD window it shows the detector image and mean spectrum in photons/s.
 `vel` and `wid` come from Gaussian fits of the window's line. Velocities are
 relative to the median of each raster column, which removes the drift left by
 the wavelength correction. A JSON file records what was done for each window.
@@ -223,19 +223,19 @@ def _is_full_ccd(title, n_wave):
 
 
 def _count_rates(counts, errs):
-    """Return a window in DN/s, with NaN for bad points.
+    """Return a window in photons/s, with NaN for bad points.
 
     Parameters
     ----------
     counts : eispac.EISCube
-        Window read without the radiometric calibration.
+        Window read without the radiometric calibration, in photons.
     errs : np.ndarray
         Errors of the window, zero or negative for bad points.
 
     Returns
     -------
     np.ndarray
-        DN/s, shape (n_y, n_x, n_wave).
+        Photons/s, shape (n_y, n_x, n_wave).
 
     Raises
     ------
@@ -450,6 +450,13 @@ def _add_version_note(figure):
                 ha='right', va='bottom', fontsize=7, color='0.55')
 
 
+def _add_stretch_note(figure, extent, equal):
+    """Say in the corner of a thumbnail if its map was stretched."""
+    ratio = _map_ratio(extent)
+    if equal and ratio is not None and not 1.0 / MAX_MAP_RATIO <= ratio <= MAX_MAP_RATIO:
+        figure.text(0.005, 0.005, 'X and Y scales differ', ha='left', va='bottom', fontsize=7, color='0.55')
+
+
 def _write_gif(canvas, path):
     """Write a figure as a GIF."""
     canvas.draw()
@@ -503,9 +510,7 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, 
     axes.set_ylabel(labels[1])
     figure.suptitle(f'{title}\n{subtitle}', fontsize=11)
     _add_version_note(figure)
-    ratio = _map_ratio(extent)
-    if equal and ratio is not None and not 1.0 / MAX_MAP_RATIO <= ratio <= MAX_MAP_RATIO:
-        figure.text(0.005, 0.005, 'X and Y scales differ', ha='left', va='bottom', fontsize=7, color='0.55')
+    _add_stretch_note(figure, extent, equal)
     _write_gif(canvas, path)
 
 
@@ -534,7 +539,7 @@ def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equ
     Parameters
     ----------
     rate : np.ndarray
-        Window in DN/s, shape (n_y, n_x, n_wave), with NaN for bad points.
+        Window in photons/s, shape (n_y, n_x, n_wave), with NaN for bad points.
     wavelength : np.ndarray
         Wavelength in Angstrom, shape (n_wave,).
     extent : tuple
@@ -565,7 +570,7 @@ def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equ
         shown = axes.imshow(_apply_nonpositive(image, norm, nonpositive), origin='lower', aspect='auto',
                             extent=image_extent, cmap=cmap, norm=norm, interpolation='nearest')
         colorbar = figure.colorbar(shown, cax=bar, label=bar_label, extend='both')
-        # The bars are short, so only values of 1 and 3 times a power of ten are labelled.
+        # The bars are short, so ticks are limited to 1 and 3 times a power of ten.
         colorbar.ax.yaxis.set_major_locator(LogLocator(subs=(1.0, 3.0), numticks=8))
         colorbar.ax.yaxis.set_minor_formatter(NullFormatter())
         return axes
@@ -574,16 +579,18 @@ def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equ
     if has_map:
         window_sum = _window_sum(rate, np.isfinite(rate), min_good_fraction)
         rectangle = _map_rectangle(extent, equal, FULL_CCD_MAP_PANEL)
-        axes = show(window_sum, _scale(window_sum, 'int')[1], rectangle, extent, 'DN/s')
+        axes = show(window_sum, _scale(window_sum, 'int')[1], rectangle, extent, 'Photons/s')
         axes.xaxis.set_major_locator(MaxNLocator(nbins=3))
         axes.set_xlabel(labels[0], labelpad=1)
         axes.set_ylabel(labels[1])
+        _add_stretch_note(figure, extent, equal)
 
-    step = float(np.median(np.abs(np.diff(wavelength))))
-    edges = (wavelength[0] - 0.5 * step, wavelength[-1] + 0.5 * step)
+    step = float(np.nanmedian(np.abs(np.diff(wavelength))))
+    edges = (np.nanmin(wavelength) - 0.5 * step, np.nanmax(wavelength) + 0.5 * step)
     detector_panel, spectrum_panel = FULL_CCD_PANELS[has_map]
     detector = _mean_of_good(rate, 1)
-    axes = show(detector, _detector_norm(detector), detector_panel, (*edges, extent[2], extent[3]), 'DN/s per pixel')
+    axes = show(detector, _detector_norm(detector), detector_panel, (*edges, extent[2], extent[3]),
+                'Photons/s per pixel')
     axes.set_xlabel('Wavelength ($\\AA$)', labelpad=1)
     axes.set_ylabel(labels[1])
 
@@ -591,7 +598,7 @@ def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equ
     axes.plot(wavelength, _mean_of_good(rate, (0, 1)), color='k', linewidth=0.6)
     axes.set_xlim(*edges)
     axes.set_xlabel('Wavelength ($\\AA$)')
-    axes.set_ylabel('Mean DN/s per pixel')
+    axes.set_ylabel('Mean photons/s per pixel')
 
     figure.suptitle(f'{title}\n{subtitle}', fontsize=11)
     _add_version_note(figure)
@@ -684,11 +691,12 @@ def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_
             heading = f'{title.strip()} [{low:.2f}-{high:.2f} $\\AA$]'
 
             if _is_full_ccd(title, wave.shape[-1]):
-                rate = _count_rates(_read_cube(data_file, iwin, exposure, apply_radcal=False), errs)
+                counts = _read_cube(data_file, iwin, exposure, apply_radcal=False)
+                rate = _count_rates(counts, cube_arrays(counts)[2])
                 path = thumbnail_path(output_root, timestamp, iwin, title, 'int')
-                render_full_ccd(rate[:, order], wave.mean(axis=(0, 1)), extent, labels, f'Spectrum - {heading}', date, path,
+                render_full_ccd(rate[:, order], np.nanmean(wave, axis=(0, 1)), extent, labels, f'Spectrum - {heading}', date, path,
                                 equal, options['min_good_fraction'], options['nonpositive'])
-                entry.update(fit=None, layout='full_ccd', units='DN/s')
+                entry.update(fit=None, layout='full_ccd', units='photons/s')
                 entry['files'].append(os.path.basename(path))
                 continue
 

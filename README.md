@@ -187,7 +187,7 @@ YYYY/MM/DD/eis_l0_<time>.fits/eis_l0_<time>.fits_line_NN_<title>.<int|vel|wid>.g
 
 The quantities are:
 
-- `int`: the window summed over wavelength, for every window. Intensities use the Del Zanna (2025) calibration by default.
+- `int`: the window summed over wavelength. Intensities use the Del Zanna (2025) calibration by default. Full-CCD windows are shown differently, as described below.
 - `vel`: Doppler velocity from a Gaussian fit, relative to the median of each raster column. The median and the colour scale leave out pixels on a template limit.
 - `wid`: Gaussian width from the same fit.
 
@@ -195,7 +195,7 @@ The line to fit is chosen from the window title. A single Gaussian is used unles
 
 For a raster with several exposures per position, the longest exposure is used. Maps have the same arcsec scale in X and Y. A map with one side more than 8 times the other is stretched to that ratio, and says so in the corner of the image. For a sit-and-stare observation the X axis is time, and the map fills the image. A map of a single exposure at a single slit position is one column wide, and is drawn as a strip as wide as the slit.
 
-Full-CCD windows hold many lines, and EIS is far less sensitive at some of their wavelengths, so a calibrated sum over one has little meaning. A window is treated as full-CCD if it is at least 900 pixels wide, or wider than 256 pixels and named after no line. Its `int` thumbnail shows the detector image and the spectrum, averaged over the raster columns, in DN/s. If the window has more than one column, a map of the window sum in DN/s is added above them. These windows have no `vel` or `wid`.
+Full-CCD windows hold many lines, and EIS is far less sensitive at some of their wavelengths, so a calibrated sum over one has little meaning. A window is treated as full-CCD if it is at least 900 pixels wide, or wider than 256 pixels and named after no line. Its `int` thumbnail shows the detector image and the spectrum, averaged over the raster columns, in photons/s. If the window has more than one column, a map of the window sum in photons/s is added above them. These windows have no `vel` or `wid`.
 
 From Python, for a raster already on disk:
 

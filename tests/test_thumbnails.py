@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
+import eismaps.thumbnails as thumbnails
+
 from eismaps.thumbnails import (MAP_AREA, _scale, fitted_maps, MAX_MAP_RATIO, _arcsec, _column_zero_point, _map_rectangle,
                                 _one_exposure_copy, _exposure_choice, _exposure_factor, _is_done,
                                 _axes, _count_rates, _detector_norm, _is_full_ccd, _process, _record_path, _slit_width,
@@ -459,3 +461,32 @@ def test_full_ccd_thumbnails_render(tmp_path):
         render_full_ccd(data, wavelength, extent, ('x', 'y'), 't', 's', str(path), equal)
         with Image.open(path) as gif:
             assert gif.size == (768, 768)
+
+
+def test_full_ccd_window_uses_uncalibrated_rates_in_time_order(tmp_path, monkeypatch):
+    # Columns of 10 s and 30 s with 30 photons give 3 and 1 photons/s, reversed to run forwards in time.
+    counts = FakeCounts([10.0, 30.0])
+    counts.data = np.full((2, 2, 1024), 30.0)
+    wave = np.tile(170.0 + 0.0223 * np.arange(1024), (2, 2, 1))
+    wininfo = np.array([(0, 'CCDBSHRT 0 177.540', 166.0, 189.0)],
+                       dtype=[('iwin', int), ('line_id', 'U32'), ('wvl_min', float), ('wvl_max', float)])
+    radcal, drawn = [], {}
+
+    def read(data_file, iwin, exposure, apply_radcal=True):
+        radcal.append(apply_radcal)
+        return counts
+
+    def draw(rate, wavelength, *args):
+        drawn.update(rate=rate, wavelength=wavelength)
+
+    monkeypatch.setattr(thumbnails.eispac, 'read_wininfo', lambda data_file: wininfo)
+    monkeypatch.setattr(thumbnails, '_read_cube', read)
+    monkeypatch.setattr(thumbnails, 'cube_arrays', lambda cube: (wave, cube.data, np.ones_like(cube.data)))
+    monkeypatch.setattr(thumbnails, '_axes', lambda cube: ((0, 1, 0, 1), 'x', 'y', True, False))
+    monkeypatch.setattr(thumbnails, 'render_full_ccd', draw)
+    options = {'min_peak_snr': 3.0, 'min_good_fraction': 0.5, 'nonpositive': 'darkest'}
+    record = thumbnails._raster_thumbnails('eis_20170407_000335.data.h5', str(tmp_path), 'del_zanna_2025', None, 300.0, options)
+    assert radcal == [True, False]
+    assert drawn['rate'][0, :, 0].tolist() == [1.0, 3.0]
+    assert drawn['wavelength'].shape == (1024,)
+    assert record['windows'][0]['units'] == 'photons/s' and record['windows'][0]['fit'] is None
