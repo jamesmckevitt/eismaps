@@ -92,3 +92,9 @@ def test_wide_window_named_after_a_line_is_fitted():
     assert wave.size == 272
     fit = choose_fit('Fe XII 195.120', wave[0], wave[-1], wave, inten, errs)
     assert fit.line == 'Fe XII 195.119'
+
+
+def test_wide_window_of_an_ion_with_no_template_is_not_fitted():
+    # S X has no template near 180 A, and the strongest line, Fe XI 180.401, belongs to another ion.
+    wave, inten, errs = spectrum([(5000.0, 180.401, 0.03), (1000.0, 188.216, 0.03)], 174.5, 190.8)
+    assert choose_fit('S X 180.730', wave[0], wave[-1], wave, inten, errs) is None
