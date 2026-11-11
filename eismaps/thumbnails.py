@@ -39,7 +39,7 @@ from PIL import Image
 from eismaps.archive import RasterUnavailable, fetch_raster, list_rasters
 from eismaps.batched_fit import cube_arrays, fit_cube
 from eismaps.calibration import CALIBRATION_METHODS, calibration_factor
-from eismaps.windows import MAX_FIT_PIXELS, choose_fit, parse_title
+from eismaps.windows import FULL_CCD_PIXELS, choose_fit, parse_title
 
 CC = 2.9979E+5  # speed of light in km/s
 THUMBNAIL_PIXELS = 768
@@ -60,10 +60,9 @@ MIN_GOOD_FRACTION = 0.5
 NONPOSITIVE = 'darkest'
 NONPOSITIVE_CHOICES = ('grey', 'darkest')
 
-# Windows at least this wide are full-CCD readouts, even if named after a line.
-# The widest window named after a line is 744 pixels and the narrowest full-CCD
-# readout is 904.
-FULL_CCD_PIXELS = 900
+# Windows wider than this and named after no line are drawn as a detector
+# image and spectrum, like full-CCD windows.
+MAX_MAP_PIXELS = 256
 
 # Fewest pixels of a raster column for its own median velocity, and the
 # fraction of the column they must be.
@@ -222,7 +221,7 @@ def _is_full_ccd(title, n_wave):
 
     These are full-CCD readouts, and wide windows named after no line.
     """
-    return n_wave >= FULL_CCD_PIXELS or (n_wave > MAX_FIT_PIXELS and not parse_title(title)[0])
+    return n_wave >= FULL_CCD_PIXELS or (n_wave > MAX_MAP_PIXELS and not parse_title(title)[0])
 
 
 def _count_rates(counts, errs):

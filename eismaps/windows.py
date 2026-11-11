@@ -31,8 +31,10 @@ ELEMENTS = ('HE', 'NE', 'NA', 'MG', 'AL', 'SI', 'AR', 'CA', 'CR', 'MN', 'FE', 'C
 # they are named after an ion.
 MAX_UNNAMED_FIT_PIXELS = 128
 
-# Windows wider than this are not fitted at all.
-MAX_FIT_PIXELS = 256
+# Windows at least this wide are full-CCD readouts and are not fitted, even if
+# named after a line. The widest window named after a line is 744 pixels and
+# the narrowest full-CCD readout is 904.
+FULL_CCD_PIXELS = 900
 
 # Lines this close to the end of a window in Angstrom are not fitted.
 WINDOW_MARGIN = 0.05
@@ -271,7 +273,7 @@ def choose_fit(title, low, high, wave, inten, errs):
         None for a window with no line to fit, such as a full-CCD window.
     """
     n_wave = wave.size
-    if n_wave > MAX_FIT_PIXELS:
+    if n_wave >= FULL_CCD_PIXELS:
         return None
     target = _target_line(title, low, high, wave, inten, errs, n_wave)
     if target is None:

@@ -83,3 +83,12 @@ def test_generic_fit_of_another_line_is_not_named_after_the_title():
 def test_empty_window_has_no_fit():
     wave, inten, errs = spectrum([], 278.14, 278.66)
     assert choose_fit('LINE 1  ', 278.14, 278.66, wave, inten, errs) is None
+
+
+def test_wide_window_named_after_a_line_is_fitted():
+    # A 272-pixel window of the slit_hefe_fast3 study, with Fe XII 195.119 among other lines.
+    wave, inten, errs = spectrum([(1000.0, 195.119, 0.03), (2000.0, 193.509, 0.03), (800.0, 192.394, 0.03)],
+                                 191.82, 197.88)
+    assert wave.size == 272
+    fit = choose_fit('Fe XII 195.120', wave[0], wave[-1], wave, inten, errs)
+    assert fit.line == 'Fe XII 195.119'
