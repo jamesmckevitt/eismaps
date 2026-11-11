@@ -27,12 +27,14 @@ CC = 2.9979E+5  # speed of light in km/s
 ELEMENTS = ('HE', 'NE', 'NA', 'MG', 'AL', 'SI', 'AR', 'CA', 'CR', 'MN', 'FE', 'CO', 'NI',
             'C', 'N', 'O', 'S', 'K')
 
-# Wider windows hold many lines and get an intensity thumbnail only, unless
-# they are named after an ion.
+# Wider windows hold many lines, so they are fitted only at a template line of
+# an ion named in the title.
 MAX_UNNAMED_FIT_PIXELS = 128
 
-# Windows wider than this are not fitted at all.
-MAX_FIT_PIXELS = 256
+# Windows at least this wide are full-CCD readouts and are not fitted, even if
+# named after a line. The widest window named after a line is 744 pixels and
+# the narrowest full-CCD readout is 904.
+FULL_CCD_PIXELS = 900
 
 # Lines this close to the end of a window in Angstrom are not fitted.
 WINDOW_MARGIN = 0.05
@@ -243,7 +245,7 @@ def _target_line(title, low, high, wave, inten, errs, n_wave):
             reference = 0.5 * (low + high)
         return min(named, key=lambda line: abs(line[2] - reference))
 
-    if not ions and n_wave > MAX_UNNAMED_FIT_PIXELS:
+    if n_wave > MAX_UNNAMED_FIT_PIXELS:
         return None
     peak = _strongest_peak(wave, inten, errs)
     if peak is None:
@@ -271,7 +273,7 @@ def choose_fit(title, low, high, wave, inten, errs):
         None for a window with no line to fit, such as a full-CCD window.
     """
     n_wave = wave.size
-    if n_wave > MAX_FIT_PIXELS:
+    if n_wave >= FULL_CCD_PIXELS:
         return None
     target = _target_line(title, low, high, wave, inten, errs, n_wave)
     if target is None:
