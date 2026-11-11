@@ -179,21 +179,52 @@ def _read_cube(data_file, iwin, exposure, apply_radcal=True):
     return cube
 
 
+def _header_copy(data_file, directory, changes):
+    """Return a header file for reading a raster with some header values changed.
+
+    The data file is linked beside the copy, and EISPAC is given the header,
+    as it would follow a link given to it.
+
+    Parameters
+    ----------
+    data_file : str
+        Data or header file of the raster.
+    directory : str
+        Directory for the copy, created if needed.
+    changes : dict
+        New values by dataset name, such as {'index/nexp': 1}.
+    """
+    head_file = re.sub(r'\.data\.h5$', '.head.h5', data_file)
+    stem = os.path.basename(head_file)[:-len('.head.h5')]
+    os.makedirs(directory, exist_ok=True)
+    head = os.path.join(directory, f'{stem}.head.h5')
+    shutil.copyfile(head_file, head)
+    os.symlink(os.path.abspath(re.sub(r'\.head\.h5$', '.data.h5', head_file)),
+               os.path.join(directory, f'{stem}.data.h5'))
+    with h5py.File(head, 'r+') as header:
+        for name, value in changes.items():
+            header[name][...] = value
+    return head
+
+
 def _one_exposure_copy(data_file, directory):
     """Return a file to read a raster with several exposures at a single position.
 
     EISPAC computes a cadence for these from one time, which gives NaN and
-    fails. Reading a copy of the header that has one exposure avoids this. The
-    data file is linked beside it, and EISPAC is given the header, as it
-    would follow a link given to it.
+    fails. Reading a copy of the header that has one exposure avoids this.
     """
-    stem = os.path.basename(data_file).replace('.data.h5', '')
-    head = os.path.join(directory, f'{stem}.head.h5')
-    shutil.copyfile(data_file.replace('.data.h5', '.head.h5'), head)
-    os.symlink(os.path.abspath(data_file), os.path.join(directory, f'{stem}.data.h5'))
-    with h5py.File(head, 'r+') as header:
-        header['index/nexp'][...] = 1
-    return head
+    return _header_copy(data_file, directory, {'index/nexp': 1})
+
+
+def _centred_pointing_copy(data_file, directory):
+    """Return a file to read a raster whose pointing is impossible.
+
+    Some headers give a pointing millions of arcsec from the Sun, and EISPAC
+    cannot build coordinates for it. A copy of the header with the pointing
+    centred on the Sun reads correctly, and its maps are drawn in pixels.
+    """
+    return _header_copy(data_file, directory, {'pointing/xcen': 0.0, 'pointing/ycen': 0.0,
+                                               'pointing/offset_x': 0.0, 'pointing/offset_y': 0.0})
 
 
 def _window_sum(values, good, min_good_fraction):
@@ -393,6 +424,24 @@ def _axes(cube):
         return (-half_t, span + half_t, bottom, top), 'Time since first exposure (minutes)', y_label, bool(reverse), False
 
     return (world_x[0] - half_x, world_x[2] + half_x, bottom, top), 'Solar-X (arcsec)', y_label, False, True
+
+
+def _pixel_axes(cube):
+    """Return the image extent and axis labels of a window in pixels.
+
+    Used where the pointing is impossible. Time stays along X for a
+    sit-and-stare observation.
+
+    Returns
+    -------
+    tuple
+        As for :func:`_axes`, with X and Y not on the same scale.
+    """
+    n_y, n_x = cube.data.shape[:2]
+    extent, x_label, y_label, reverse, equal = _axes(cube)
+    if equal:
+        extent, x_label = (-0.5, n_x - 0.5, *extent[2:]), 'Raster position (pixels)'
+    return (extent[0], extent[1], -0.5, n_y - 0.5), x_label, 'Slit position (pixels)', reverse, False
 
 
 def _scale(image, measurement):
@@ -667,36 +716,48 @@ def make_thumbnails(data_file, output_root, calibration='del_zanna_2025', min_pe
     _check_options(min_peak_snr, min_good_fraction, nonpositive)
     options = {'min_peak_snr': min_peak_snr, 'min_good_fraction': min_good_fraction, 'nonpositive': nonpositive}
     exposure, reference_exposure, single_position = _exposure_choice(data_file)
-    if single_position:
-        with tempfile.TemporaryDirectory() as temporary:
-            copy = _one_exposure_copy(data_file, temporary)
-            return _raster_thumbnails(copy, output_root, calibration, exposure, reference_exposure, options)
-    return _raster_thumbnails(data_file, output_root, calibration, exposure, reference_exposure, options)
+    with tempfile.TemporaryDirectory() as temporary:
+        if single_position:
+            data_file = _one_exposure_copy(data_file, temporary)
+        return _raster_thumbnails(data_file, output_root, calibration, exposure, reference_exposure, options,
+                                  temporary)
 
 
-def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_exposure, options):
-    """Make the thumbnails of a raster with a chosen exposure set, returning its record."""
+def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_exposure, options, directory):
+    """Make the thumbnails of a raster with a chosen exposure set, returning its record.
+
+    `directory` holds a copy of the header made if the pointing is impossible.
+    """
     timestamp = _timestamp(data_file)
     wininfo = eispac.read_wininfo(data_file)
     date = f'{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}T{timestamp[9:11]}:{timestamp[11:13]}:{timestamp[13:15]}'
     record = {'timestamp': timestamp, 'exposure_set': exposure, 'reference_exposure': reference_exposure,
               'calibration': calibration, 'options': options, 'windows': []}
 
+    centred = None
     for row in wininfo:
         iwin, title = int(row['iwin']), str(row['line_id'])
         low, high = float(row['wvl_min']), float(row['wvl_max'])
         entry = {'iwin': iwin, 'title': title, 'files': []}
         record['windows'].append(entry)
         try:
-            cube = _read_cube(data_file, iwin, exposure)
+            source = data_file
+            try:
+                cube = _read_cube(source, iwin, exposure)
+            except ValueError:
+                if centred is None:
+                    centred = _centred_pointing_copy(data_file, os.path.join(directory, 'centred'))
+                source = centred
+                cube = _read_cube(source, iwin, exposure)
+                entry['pixel_axes'] = True
             wave, inten, errs = cube_arrays(cube)
-            extent, x_label, y_label, reverse, equal = _axes(cube)
+            extent, x_label, y_label, reverse, equal = _pixel_axes(cube) if source == centred else _axes(cube)
             order = slice(None, None, -1) if reverse else slice(None)
             labels = (x_label, y_label)
             heading = f'{title.strip()} [{low:.2f}-{high:.2f} $\\AA$]'
 
             if _is_full_ccd(title, wave.shape[-1]):
-                counts = _read_cube(data_file, iwin, exposure, apply_radcal=False)
+                counts = _read_cube(source, iwin, exposure, apply_radcal=False)
                 rate = _count_rates(counts, cube_arrays(counts)[2])
                 path = thumbnail_path(output_root, timestamp, iwin, title, 'int')
                 render_full_ccd(rate[:, order], np.nanmean(wave, axis=(0, 1)), extent, labels, f'Spectrum - {heading}', date, path,

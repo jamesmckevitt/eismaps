@@ -485,8 +485,74 @@ def test_full_ccd_window_uses_uncalibrated_rates_in_time_order(tmp_path, monkeyp
     monkeypatch.setattr(thumbnails, '_axes', lambda cube: ((0, 1, 0, 1), 'x', 'y', True, False))
     monkeypatch.setattr(thumbnails, 'render_full_ccd', draw)
     options = {'min_peak_snr': 3.0, 'min_good_fraction': 0.5, 'nonpositive': 'darkest'}
-    record = thumbnails._raster_thumbnails('eis_20170407_000335.data.h5', str(tmp_path), 'del_zanna_2025', None, 300.0, options)
+    record = thumbnails._raster_thumbnails('eis_20170407_000335.data.h5', str(tmp_path), 'del_zanna_2025', None, 300.0,
+                                            options, str(tmp_path))
     assert radcal == [True, False]
     assert drawn['rate'][0, :, 0].tolist() == [1.0, 3.0]
     assert drawn['wavelength'].shape == (1024,)
     assert record['windows'][0]['units'] == 'photons/s' and record['windows'][0]['fit'] is None
+
+
+def test_centred_pointing_copy_changes_only_the_copy(tmp_path):
+    data = tmp_path / 'eis_20090623_214004.data.h5'
+    with h5py.File(data, 'w') as f:
+        f['x'] = [1]
+    head = tmp_path / 'eis_20090623_214004.head.h5'
+    with h5py.File(head, 'w') as f:
+        for name, value in (('xcen', 307.5), ('ycen', 1.4745546e7), ('offset_x', -2.5), ('offset_y', 37.2)):
+            f[f'pointing/{name}'] = np.array([value], dtype=np.float32)
+    path = thumbnails._centred_pointing_copy(str(data), str(tmp_path / 'centred'))
+    with h5py.File(path, 'r') as f:
+        assert [f[f'pointing/{n}'][0] for n in ('xcen', 'ycen', 'offset_x', 'offset_y')] == [0, 0, 0, 0]
+    with h5py.File(head, 'r') as f:
+        assert f['pointing/ycen'][0] == np.float32(1.4745546e7)
+    assert (tmp_path / 'centred' / 'eis_20090623_214004.data.h5').resolve() == data.resolve()
+
+
+def test_header_copy_of_a_header_copy(tmp_path):
+    # A raster with one position and impossible pointing gets a copy of the one-exposure copy.
+    data = tmp_path / 'eis_20090623_214004.data.h5'
+    with h5py.File(data, 'w') as f:
+        f['x'] = [1]
+    with h5py.File(tmp_path / 'eis_20090623_214004.head.h5', 'w') as f:
+        f['index/nexp'] = [2]
+        f['pointing/ycen'] = np.array([1e7], dtype=np.float32)
+    first = _one_exposure_copy(str(data), str(tmp_path / 'one'))
+    second = thumbnails._header_copy(first, str(tmp_path / 'two'), {'pointing/ycen': 0.0})
+    with h5py.File(second, 'r') as f:
+        assert f['index/nexp'][0] == 1 and f['pointing/ycen'][0] == 0
+    assert (tmp_path / 'two' / 'eis_20090623_214004.data.h5').resolve() == data.resolve()
+
+
+def test_raster_with_impossible_pointing_is_drawn_in_pixels(tmp_path, monkeypatch):
+    wininfo = np.array([(0, 'Fe XII 195.120', 194.8, 195.4)],
+                       dtype=[('iwin', int), ('line_id', 'U32'), ('wvl_min', float), ('wvl_max', float)])
+    cube = FakeColumnCube(columns=4)
+    cube.meta['mod_index']['obs_type'] = 'scan'
+    cube.data = np.ones((512, 4, 24))
+    cube.meta['duration'] = np.full(4, 30.0)
+    wave = np.tile(194.85 + 0.0223 * np.arange(24), (512, 4, 1))
+    read, drawn = [], {}
+
+    def fake_read(data_file, iwin, exposure, apply_radcal=True):
+        read.append(data_file)
+        if 'centred' not in data_file:
+            raise ValueError('EISPAC could not read window 0')
+        return cube
+
+    def fake_render(image, extent, labels, *args, **kwargs):
+        drawn.update(extent=extent, labels=labels)
+
+    monkeypatch.setattr(thumbnails.eispac, 'read_wininfo', lambda data_file: wininfo)
+    monkeypatch.setattr(thumbnails, '_read_cube', fake_read)
+    monkeypatch.setattr(thumbnails, '_centred_pointing_copy', lambda data_file, directory: directory + '/x.head.h5')
+    monkeypatch.setattr(thumbnails, 'cube_arrays', lambda c: (wave, c.data, np.ones_like(c.data)))
+    monkeypatch.setattr(thumbnails, 'choose_fit', lambda *args: None)
+    monkeypatch.setattr(thumbnails, 'render_thumbnail', fake_render)
+    options = {'min_peak_snr': 3.0, 'min_good_fraction': 0.5, 'nonpositive': 'darkest'}
+    record = thumbnails._raster_thumbnails('eis_20090623_214004.data.h5', str(tmp_path), 'del_zanna_2025', None, 30.0,
+                                            options, str(tmp_path))
+    assert record['windows'][0]['pixel_axes'] and 'error' not in record['windows'][0]
+    assert read == ['eis_20090623_214004.data.h5', str(tmp_path) + '/centred/x.head.h5']
+    assert drawn['labels'] == ('Raster position (pixels)', 'Slit position (pixels)')
+    assert drawn['extent'] == (-0.5, 3.5, -0.5, 511.5)
