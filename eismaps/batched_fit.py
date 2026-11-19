@@ -506,6 +506,13 @@ def fit_spectra(wave, inten, errs, template, parinfo, min_points=7, maxiter=2000
     wave = np.asarray(wave, dtype=float)
     inten = np.asarray(inten, dtype=float)
     errs = np.asarray(errs, dtype=float)
+    # Points outside the template's range carry no weight, so they are left
+    # out to save memory. One is kept if none are in range, so that such
+    # spectra get status -1.
+    keep = ((wave >= template['wmin']) & (wave <= template['wmax'])).any(axis=0)
+    if not keep.any():
+        keep[0] = True
+    wave, inten, errs = wave[:, keep], inten[:, keep], errs[:, keep]
     parts = [_fit_block(wave[i:i + block], inten[i:i + block], errs[i:i + block], template, parinfo,
                         min_points, maxiter, tolerance)
              for i in range(0, wave.shape[0], block)]

@@ -123,3 +123,21 @@ def test_blocks_do_not_change_the_result():
     whole = fit_spectra(wave, inten, errs, template, parinfo)
     blocks = fit_spectra(wave, inten, errs, template, parinfo, block=7)
     assert np.array_equal(whole['params'], blocks['params'])
+
+
+def test_points_outside_the_template_range_change_nothing():
+    template, parinfo = template_and_parinfo()
+    wave, inten, errs = spectra([800.0] * 5, [195.119] * 5, [0.03] * 5, noise=20.0)
+    # A wider window, with a strong line outside the template range.
+    extra = wave[:, -1:] + 0.0223 * np.arange(1, 41)
+    wide = (np.hstack([wave, extra]), np.hstack([inten, np.full(extra.shape, 5000.0)]), np.hstack([errs, np.full(extra.shape, 20.0)]))
+    narrow = fit_spectra(wave, inten, errs, template, parinfo)
+    padded = fit_spectra(*wide, template, parinfo)
+    assert np.allclose(narrow['params'], padded['params'], rtol=1e-12)
+    assert np.array_equal(narrow['status'], padded['status'])
+
+
+def test_no_point_in_the_template_range_is_not_fitted():
+    template, parinfo = template_and_parinfo(wmin=200.0, wmax=200.5)
+    wave, inten, errs = spectra([800.0] * 3, [195.119] * 3, [0.03] * 3)
+    assert (fit_spectra(wave, inten, errs, template, parinfo)['status'] == -1).all()
