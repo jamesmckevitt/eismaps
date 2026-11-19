@@ -185,7 +185,7 @@ fd_chi2 = extras['chi2']
 YYYY/MM/DD/eis_l0_<time>.fits/eis_l0_<time>.fits_line_NN_<title>.<int|vel|wid>.gif
 ```
 
-`int` is the window summed over wavelength, calibrated with Del Zanna (2025) by default. `vel` and `wid` are the Doppler velocity and width from a Gaussian fit of the line named in the window title, with velocities relative to the median of each raster column. Full-CCD windows get a detector image and spectrum in photons/s instead.
+`int` is the window summed over wavelength, calibrated with Del Zanna (2025) by default. `vel` and `wid` are the Doppler velocity and width from a Gaussian fit of the line named in the window title, or of the strongest line in a narrow window named after no line. Velocities are relative to the median of each raster column. Full-CCD windows get a detector image and spectrum in photons/s instead.
 
 ```python
 from eismaps import make_thumbnails
@@ -207,7 +207,7 @@ These options are also keywords of `make_thumbnails()`, with underscores:
 - `--min-good-fraction`: fraction of good points a pixel needs for its summed intensity (default 0.5).
 - `--nonpositive`: `darkest` (default) or `grey`, the colour of summed intensities at or below zero.
 
-The fits use `eismaps.batched_fit.fit_cube`, which fits all the spectra of a window at once. It takes the same template as EISPAC's `fit_spectra` and returns an EISPAC fit result.
+The fits use `eismaps.batched_fit.fit_cube`, which fits all the spectra of a window at once. It takes an EISPAC template and its parinfo, and returns an EISPAC fit result.
 
 ## Typical API Flow
 
