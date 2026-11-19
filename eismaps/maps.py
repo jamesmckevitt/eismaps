@@ -181,7 +181,7 @@ def batch(files, measurement=None, clip=False, save_fit=True, save_plot=False, o
 
     if mssl_solarb_file_format:
         warnings.warn('mssl_solarb_file_format is ignored and will be removed. Use eismaps.make_thumbnails.',
-                      DeprecationWarning, stacklevel=2)
+                      FutureWarning, stacklevel=2)
     measurement = _normalise_measurements(measurement)
     maps_by_measurement = {name: [] for name in measurement}
 
