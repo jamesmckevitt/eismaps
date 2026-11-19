@@ -336,7 +336,7 @@ def _iterate(problem, base, rows, values, damping0, maxiter, tolerance, keep_pea
             scale[new] = np.maximum(scale[new], column_norm)
             iterations[active[new]] += 1
 
-            # gtol: largest cosine between the residuals and a column of the Jacobian.
+            # MPFIT's gtol test uses the largest cosine between the residuals and a column of the Jacobian.
             with np.errstate(all='ignore'):
                 cosine = np.where(column_norm > 0, np.abs(gradient[new]) / (np.sqrt(chi2[new])[:, None] * column_norm), 0.0)
             converged = (cosine.max(axis=1) <= tolerance) | (chi2[new] == 0)

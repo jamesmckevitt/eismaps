@@ -87,8 +87,9 @@ class WindowFit:
     single : bool
         True for a single Gaussian.
     intensity_ratio, velocity_offset : float or None
-        Single Gaussian against the multi-component fit on the mean spectrum:
-        intensity ratio and centroid difference in km/s. None if not compared.
+        Intensity ratio and centroid difference in km/s of the single Gaussian
+        against the multi-component fit on the mean spectrum. None if not
+        compared.
     """
 
     template: dict
