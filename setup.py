@@ -29,9 +29,9 @@ setup(
     install_requires=[
         'eispac>=0.99.3',
         'h5py',
-        'matplotlib',
+        'matplotlib>=3.5',
         'numpy>=1.24',
-        'pillow',
+        'pillow>=9.1',
         'scipy',
         'sunkit-image>=0.5.1',
     ],
