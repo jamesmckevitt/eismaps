@@ -183,6 +183,7 @@ def _single_gaussian(path, component):
     fit = fit[keep]
     fit[2] = np.clip(fit[2], *WIDTH_LIMITS)
     template.update(n_gauss=1, n_poly=n_poly, fit=fit, component=0,
+                    line_ids=np.atleast_1d(template['line_ids'])[[component]],
                     wmin=centre - SINGLE_GAUSSIAN_HALF_WIDTH, wmax=centre + SINGLE_GAUSSIAN_HALF_WIDTH)
     return template, new
 

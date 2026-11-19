@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from eismaps.windows import choose_fit, parse_title
+from eismaps.windows import _single_gaussian, choose_fit, parse_title, template_library
 
 
 @pytest.mark.parametrize('title, ions, wavelength', [
@@ -98,3 +98,11 @@ def test_wide_window_of_an_ion_with_no_template_is_not_fitted():
     # S X has no template near 180 A, and the strongest line, Fe XI 180.401, belongs to another ion.
     wave, inten, errs = spectrum([(5000.0, 180.401, 0.03), (1000.0, 188.216, 0.03)], 174.5, 190.8)
     assert choose_fit('S X 180.730', wave[0], wave[-1], wave, inten, errs) is None
+
+
+def test_single_gaussian_from_a_template_names_its_own_line():
+    path, n_gauss, lines = next(entry for entry in template_library() if 'fe_12_196_640.2c' in entry[0])
+    component = lines.index(('FE', 12, 196.64))
+    template, parinfo = _single_gaussian(path, component)
+    assert len(template['line_ids']) == 1
+    assert '196.64' in str(template['line_ids'][0])
