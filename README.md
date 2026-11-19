@@ -179,25 +179,13 @@ fd_chi2 = extras['chi2']
 
 ### SolarB Thumbnails
 
-`make_thumbnails()` makes the quicklook images of a raster for the [MSSL SolarB archive](https://solarb.mssl.ucl.ac.uk/SolarB/). It writes one GIF per spectral window and quantity, using the archive's directory layout and file names:
+`make_thumbnails()` makes the quicklook images of a raster for the [MSSL SolarB archive](https://solarb.mssl.ucl.ac.uk/SolarB/), one GIF per spectral window and quantity, in the archive's layout:
 
 ```text
 YYYY/MM/DD/eis_l0_<time>.fits/eis_l0_<time>.fits_line_NN_<title>.<int|vel|wid>.gif
 ```
 
-The quantities are:
-
-- `int`: the window summed over wavelength. Intensities use the Del Zanna (2025) calibration by default. Full-CCD windows are shown differently, as described below.
-- `vel`: Doppler velocity from a Gaussian fit, relative to the median of each raster column. The median and the colour scale leave out pixels on a template limit.
-- `wid`: Gaussian width from the same fit.
-
-The line to fit is chosen from the window title. A window wider than 128 pixels holds many lines, so it is fitted only if the title names an ion with an EISPAC template line in the window. A single Gaussian is used unless a check on the window's mean spectrum shows that a neighbouring line changes the result, when the smallest EISPAC multi-component template with that line is used. Pixels with a peak below 3 times its error, or a parameter the fit did not constrain, are grey. Summed intensities at or below zero are drawn in the darkest colour, as the intensity scale is logarithmic. Velocities and widths on a template limit are shown, unlike in `make_maps`, so that the fastest and broadest pixels of a flare are not lost. The true value of such a pixel is at or beyond the limit.
-
-For a raster with several exposures per position, the longest exposure is used. Maps have the same arcsec scale in X and Y. A map with one side more than 8 times the other is stretched to that ratio, and says so in the corner of the image. For a sit-and-stare observation the X axis is time, and the map fills the image. A map of a single exposure at a single slit position is one column wide, and is drawn as a strip as wide as the slit. Some headers give a pointing that EISPAC cannot use, such as millions of arcsec from the Sun. The maps of these rasters are drawn in pixels, along the slit and across the raster, and the JSON record marks their windows with `pixel_axes`.
-
-Full-CCD windows hold many lines, and EIS is far less sensitive at some of their wavelengths, so a calibrated sum over one has little meaning. A window is treated as full-CCD if it is at least 900 pixels wide, or wider than 256 pixels and named after no line. Its `int` thumbnail shows the detector image and the spectrum, averaged over the raster columns, in photons/s. If the window has more than one column, a map of the window sum in photons/s is added above them. These windows have no `vel` or `wid`.
-
-From Python, for a raster already on disk:
+`int` is the window summed over wavelength, calibrated with Del Zanna (2025) by default. `vel` and `wid` are the Doppler velocity and width from a Gaussian fit of the line named in the window title, with velocities relative to the median of each raster column. Full-CCD windows get a detector image and spectrum in photons/s instead.
 
 ```python
 from eismaps import make_thumbnails
@@ -205,31 +193,21 @@ from eismaps import make_thumbnails
 record = make_thumbnails('eis_20130116_093720.data.h5', 'thumbnails')
 ```
 
-From the command line, for rasters by time, for whole days, or for files:
+From the command line, for rasters by time, whole days or files:
 
 ```bash
-eismaps-solarb-thumbnails 20130116_093720 --output thumbnails
 eismaps-solarb-thumbnails --date 2013-01-16 --output thumbnails --processes 8
 ```
 
-Three options change which pixels are grey. They are keywords of `make_thumbnails()` and options of the command:
+Files are downloaded from the MSSL mirror, or from NRL, and deleted afterwards. A JSON file beside each raster's thumbnails records what was done, and rasters already done are skipped unless `--overwrite` is given. Only rasters with level 1 HDF5 files can be processed, which leaves out the 40 and 266 arcsec slot observations.
 
-- `min_peak_snr` (`--min-peak-snr`): smallest fitted peak, in units of its error, for a velocity or width to be shown. The default is 3, and 0 shows every fit with a positive peak.
-- `min_good_fraction` (`--min-good-fraction`): fraction of good points a pixel needs for its summed intensity. The default is 0.5. Missing points are taken to have the mean of the others.
-- `nonpositive` (`--nonpositive`): `'darkest'` (default) draws summed intensities at or below zero in the lowest colour of the scale, and `'grey'` draws them like missing pixels.
+These options are also keywords of `make_thumbnails()`, with underscores:
 
-Files are downloaded from the MSSL mirror, or from NRL if the mirror has no complete copy, and deleted afterwards. A JSON file beside each raster's thumbnails records the fit used for each window. Rasters done without errors are skipped unless `--overwrite` is given, and a raster that fails has its reason in a file ending in `.error`. Only rasters with level 1 HDF5 files can be processed, which leaves out the 40 and 266 arcsec slot observations.
+- `--min-peak-snr`: smallest fitted peak, in units of its error, for a velocity or width to be shown (default 3).
+- `--min-good-fraction`: fraction of good points a pixel needs for its summed intensity (default 0.5).
+- `--nonpositive`: `darkest` (default) or `grey`, the colour of summed intensities at or below zero.
 
-The fits use `eismaps.batched_fit`, which fits all the spectra of a window together and is much faster than EISPAC's `fit_spectra`. It takes the same template and returns an EISPAC fit result:
-
-```python
-import eispac
-from eismaps.batched_fit import fit_cube
-
-cube = eispac.read_cube('eis_20130116_093720.data.h5', 195.119)
-template = eispac.read_template(eispac.data.get_fit_template_filepath('fe_12_195_119.1c.template.h5'))
-fit_result = fit_cube(cube, template.template, template.parinfo)
-```
+The fits use `eismaps.batched_fit.fit_cube`, which fits all the spectra of a window at once. It takes the same template as EISPAC's `fit_spectra` and returns an EISPAC fit result.
 
 ## Typical API Flow
 
