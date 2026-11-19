@@ -125,12 +125,18 @@ def thumbnail_path(root, timestamp, iwin, title, measurement):
                         f'{level0}_line_{iwin:02d}_{name}.{measurement}.gif')
 
 
+def _upper_median(values):
+    """Return the median of values, or the upper of the two middle values for an even number."""
+    return float(np.sort(values)[np.size(values) // 2])
+
+
 def _exposure_choice(data_file):
     """Return the exposure set to use and the exposure time of the calibration.
 
     The calibration in the header holds one exposure time, the median of the
-    exposures of a position. The longest exposure of a position is used, as
-    it has the most signal.
+    exposures. For an even number of exposures this is the upper of the two
+    middle values, as IDL's median gives. The longest exposure of a position
+    is used, as it has the most signal.
 
     Returns
     -------
@@ -142,8 +148,8 @@ def _exposure_choice(data_file):
     """
     with h5py.File(data_file.replace('.data.h5', '.head.h5'), 'r') as head:
         durations = np.atleast_2d(np.array(head['exposure_times/duration'], dtype=float))
-    medians = np.array([np.median(d[d > 0]) if (d > 0).any() else 0.0 for d in durations])
-    reference = float(np.sort(medians)[medians.size // 2])
+    medians = np.array([_upper_median(d[d > 0]) if (d > 0).any() else 0.0 for d in durations])
+    reference = _upper_median(medians)
     several = durations.shape[0] > 1
     longest = int(np.argmax(medians)) if several else None
     return longest, reference if reference > 0 else None, several and durations.shape[1] == 1

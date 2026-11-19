@@ -566,3 +566,7 @@ def test_nan_wavelength_spoils_only_its_own_pixel():
     errs[1, 2, 4] = 0.0
     assert np.isfinite(thumbnails._summed_intensity(wave, inten, errs)).all()
     assert np.isfinite(thumbnails._mean_spectrum(wave, inten, errs)[0]).all()
+
+
+def test_exposure_times_within_a_set_use_the_upper_median(tmp_path):
+    assert _exposure_choice(write_durations(tmp_path, [[60.0] * 10 + [10.0] * 10]))[1] == 60.0
