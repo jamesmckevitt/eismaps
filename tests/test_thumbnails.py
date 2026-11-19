@@ -556,3 +556,13 @@ def test_raster_with_impossible_pointing_is_drawn_in_pixels(tmp_path, monkeypatc
     assert read == ['eis_20090623_214004.data.h5', str(tmp_path) + '/centred/x.head.h5']
     assert drawn['labels'] == ('Raster position (pixels)', 'Slit position (pixels)')
     assert drawn['extent'] == (-0.5, 3.5, -0.5, 511.5)
+
+
+def test_nan_wavelength_spoils_only_its_own_pixel():
+    wave = np.arange(10.0)[None, None, :] * 0.0223 + np.zeros((3, 4, 1))
+    inten = np.full((3, 4, 10), 5.0)
+    errs = np.ones_like(inten)
+    wave[1, 2, 4] = np.nan
+    errs[1, 2, 4] = 0.0
+    assert np.isfinite(thumbnails._summed_intensity(wave, inten, errs)).all()
+    assert np.isfinite(thumbnails._mean_spectrum(wave, inten, errs)[0]).all()

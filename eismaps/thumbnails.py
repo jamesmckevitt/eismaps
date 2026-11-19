@@ -243,7 +243,7 @@ def _summed_intensity(wave, inten, errs, min_good_fraction=MIN_GOOD_FRACTION):
 
     Pixels with less than `min_good_fraction` of their points good are NaN.
     """
-    step = float(np.median(np.abs(np.diff(wave, axis=-1))))
+    step = float(np.nanmedian(np.abs(np.diff(wave, axis=-1))))
     return _window_sum(inten, errs > 0, min_good_fraction) * step
 
 
@@ -289,7 +289,7 @@ def _mean_spectrum(wave, inten, errs):
     used = np.maximum(count, 1)
     mean = np.where(good, inten, 0.0).sum(axis=(0, 1)) / used
     error = np.sqrt(np.where(good, errs ** 2, 0.0).sum(axis=(0, 1))) / used
-    return wave.mean(axis=(0, 1)), mean, np.where(count > 0, error, 0.0)
+    return _mean_of_good(wave, (0, 1)), mean, np.where(count > 0, error, 0.0)
 
 
 def _parameter_state(fit_res, index):
