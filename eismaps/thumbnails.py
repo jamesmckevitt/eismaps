@@ -708,8 +708,8 @@ def make_thumbnails(data_file, output_root, calibration='del_zanna_2025', min_pe
     Returns
     -------
     dict
-        Record of the raster: exposure used, options, and for each window its
-        title, fit and thumbnails, or the error if a window failed.
+        Record of the raster, with the exposure used, the options, and for
+        each window its title, fit and thumbnails, or the error if it failed.
     """
     if calibration not in CALIBRATION_METHODS:
         raise ValueError(f'Unknown calibration method: {calibration}. Choose from {sorted(CALIBRATION_METHODS)}')

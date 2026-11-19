@@ -40,8 +40,8 @@ def _model_and_jacobian(params, wave, n_gauss, n_poly):
     Parameters
     ----------
     params : np.ndarray
-        Parameters, shape (n_spectra, n_params): peak, centroid and width of
-        each Gaussian, then the background polynomial in increasing order.
+        Peak, centroid and width of each Gaussian, then the background
+        polynomial in increasing order, shape (n_spectra, n_params).
     wave : np.ndarray
         Wavelengths, shape (n_spectra, n_wave).
     n_gauss, n_poly : int
