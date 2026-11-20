@@ -861,7 +861,7 @@ def make_level0_thumbnails(level0_file, output_root, min_good_fraction=MIN_GOOD_
     _check_options(MIN_PEAK_SNR, min_good_fraction, nonpositive)
     timestamp = _timestamp(level0_file)
     date = f'{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}T{timestamp[9:11]}:{timestamp[11:13]}:{timestamp[13:15]}'
-    subtitle = f'{date}  (level 0, uncalibrated)'
+    subtitle = f'{date}  (level 0, uncalibrated, above background)'
     raster = read_level0(level0_file)
     record = {'timestamp': timestamp, 'level': 0,
               'options': {'min_good_fraction': min_good_fraction, 'nonpositive': nonpositive}, 'windows': []}
