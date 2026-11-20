@@ -102,7 +102,9 @@ def test_wide_window_of_an_ion_with_no_template_is_not_fitted():
 
 def test_single_gaussian_from_a_template_names_its_own_line():
     path, n_gauss, lines = next(entry for entry in template_library() if 'fe_12_196_640.2c' in entry[0])
-    component = lines.index(('FE', 12, 196.64))
+    # Fe XIII 196.525 is not the first component, so this fails if the first line is always kept.
+    component = lines.index(('FE', 13, 196.525))
+    assert component > 0
     template, parinfo = _single_gaussian(path, component)
     assert len(template['line_ids']) == 1
-    assert '196.64' in str(template['line_ids'][0])
+    assert '196.525' in str(template['line_ids'][0])

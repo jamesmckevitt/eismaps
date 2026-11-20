@@ -135,6 +135,9 @@ def test_points_outside_the_template_range_change_nothing():
     padded = fit_spectra(*wide, template, parinfo)
     assert np.allclose(narrow['params'], padded['params'], rtol=1e-12)
     assert np.array_equal(narrow['status'], padded['status'])
+    # Needing every point in the range shows that none of them is dropped.
+    in_range = int(((wave[0] >= template['wmin']) & (wave[0] <= template['wmax'])).sum())
+    assert (fit_spectra(*wide, template, parinfo, min_points=in_range)['status'] > 0).all()
 
 
 def test_no_point_in_the_template_range_is_not_fitted():
