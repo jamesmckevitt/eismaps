@@ -24,9 +24,10 @@ TIMEOUT = 120  # seconds
 # Largest part of a level 0 file read to find its primary header, in bytes.
 MAX_HEADER_BYTES = 1 << 20
 
-# Certificates are checked against certifi's list of trusted roots, as some
-# systems lack the root that signs NRL's certificate.
-CONTEXT = ssl.create_default_context(cafile=certifi.where())
+# certifi's trusted roots are added to the system's, as some systems lack the
+# root that signs NRL's certificate.
+CONTEXT = ssl.create_default_context()
+CONTEXT.load_verify_locations(cafile=certifi.where())
 
 
 class RasterUnavailable(Exception):
