@@ -658,3 +658,11 @@ def test_outage_is_retried_not_made_from_level0(tmp_path, monkeypatch):
     record = thumbnails.process_raster('20130116_093720', str(tmp_path))
     assert 'did not answer' in record['error']
     assert not thumbnails._is_done(str(tmp_path), '20130116_093720')
+
+
+def test_local_level0_slot_file_is_skipped(tmp_path):
+    from test_level0 import write_level0
+    counts = np.full((2, 3, 4), 500)
+    path = write_level0(tmp_path / 'eis_l0_20130116_093720.fits.gz', counts, [1_000_000] * 2, n_raster=2, slit='40"')
+    record = thumbnails.process_raster(path, str(tmp_path / 'out'))
+    assert 'skipped' in record and 'error' not in record

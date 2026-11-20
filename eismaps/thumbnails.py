@@ -32,6 +32,7 @@ from importlib.metadata import version
 
 import eispac
 import h5py
+from astropy.io import fits
 import matplotlib.colors as mcolor
 import numpy as np
 from matplotlib import colormaps
@@ -886,13 +887,20 @@ def make_level0_thumbnails(level0_file, output_root, min_good_fraction=MIN_GOOD_
     return record
 
 
+def _level0_skip(header, reason):
+    """Return why a level 0 file gets no thumbnails, or None if it gets them."""
+    slit = str(header.get('SLIT_ID', '')).strip()
+    if slit in LEVEL0_SLITS:
+        return None
+    return f'{reason}, and the level 0 file is not for the 1" or 2" slit (SLIT_ID {slit or "missing"})'
+
+
 def _level0_record(timestamp, output_root, directory, reason, min_good_fraction, nonpositive):
     """Return the record of a raster made from its level 0 file, or of why it could not be made."""
     try:
-        slit = str(level0_header(timestamp).get('SLIT_ID', '')).strip()
-        if slit not in LEVEL0_SLITS:
-            return {'timestamp': timestamp, 'windows': [],
-                    'skipped': f'{reason}, and the level 0 file is for the {slit} slit or slot'}
+        skipped = _level0_skip(level0_header(timestamp), reason)
+        if skipped:
+            return {'timestamp': timestamp, 'windows': [], 'skipped': skipped}
         record = make_level0_thumbnails(fetch_level0(timestamp, directory), output_root, min_good_fraction,
                                         nonpositive)
     except RasterUnavailable as error:
@@ -941,7 +949,9 @@ def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='d
     with tempfile.TemporaryDirectory(dir=work_dir) as temporary:
         try:
             if local and _is_level0_file(timestamp_or_file):
-                record = make_level0_thumbnails(timestamp_or_file, output_root, min_good_fraction, nonpositive)
+                skipped = _level0_skip(fits.getheader(timestamp_or_file), 'A level 0 file was given')
+                record = ({'timestamp': timestamp, 'windows': [], 'skipped': skipped} if skipped else
+                          make_level0_thumbnails(timestamp_or_file, output_root, min_good_fraction, nonpositive))
             else:
                 data_file = timestamp_or_file if local else fetch_raster(timestamp, temporary)
                 record = make_thumbnails(data_file, output_root, calibration, min_peak_snr, min_good_fraction,
@@ -1032,7 +1042,8 @@ def main(argv=None):
     with multiprocessing.Pool(args.processes) as pool:
         for record in pool.imap_unordered(_process, jobs):
             failed = sum(_window_failed(w) for w in record.get('windows', []))
-            print(record['timestamp'], f"{record['seconds']} s", record.get('error', f'{failed} windows failed'), flush=True)
+            status = record.get('error') or record.get('skipped') or f'{failed} windows failed'
+            print(record['timestamp'], f"{record['seconds']} s", status, flush=True)
     if failed_dates:
         sys.exit(f'No listing for {failed_dates}')
 
