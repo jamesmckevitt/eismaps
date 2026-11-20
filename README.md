@@ -185,7 +185,7 @@ fd_chi2 = extras['chi2']
 YYYY/MM/DD/eis_l0_<time>.fits/eis_l0_<time>.fits_line_NN_<title>.<int|vel|wid>.gif
 ```
 
-`int` is the window summed over wavelength, calibrated with Del Zanna (2025) by default. `vel` and `wid` are the Doppler velocity and width from a Gaussian fit of the line named in the window title, or of the strongest line in a narrow window named after no line. Velocities are relative to the median of each raster column. Full-CCD windows get a detector image and spectrum in photons/s instead.
+`int` is the window summed over wavelength, calibrated with Del Zanna (2025) by default. `vel` and `wid` are the Doppler velocity and width from a Gaussian fit of the line named in the window title, or of the strongest line in a narrow window whose title names no line with a template. Velocities are relative to the median of each raster column. Full-CCD windows get a detector image and spectrum in photons/s instead.
 
 ```python
 from eismaps import make_thumbnails
