@@ -10,6 +10,9 @@ a full-CCD window it shows the detector image and mean spectrum in photons/s.
 `vel` and `wid` come from Gaussian fits of the window's line. Velocities are
 relative to the median of each raster column, which removes the drift left by
 the wavelength correction. A JSON file records what was done for each window.
+
+Rasters with no complete level 1 file get `int` thumbnails from their level 0
+file instead, in counts per second above the median of each spectrum.
 """
 
 import argparse
@@ -24,6 +27,7 @@ import sys
 import tempfile
 import time
 import traceback
+import warnings
 from importlib.metadata import version
 
 import eispac
@@ -36,9 +40,10 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import LogLocator, MaxNLocator, NullFormatter
 from PIL import Image
 
-from eismaps.archive import RasterUnavailable, fetch_raster, list_rasters
+from eismaps.archive import RasterUnavailable, fetch_level0, fetch_raster, level0_header, list_rasters
 from eismaps.batched_fit import cube_arrays, fit_cube
 from eismaps.calibration import CALIBRATION_METHODS, calibration_factor
+from eismaps.level0 import read_level0
 from eismaps.windows import FULL_CCD_PIXELS, choose_fit, parse_title
 
 CC = 2.9979E+5  # speed of light in km/s
@@ -63,6 +68,10 @@ NONPOSITIVE_CHOICES = ('grey', 'darkest')
 # Windows wider than this and named after no line are drawn as a detector
 # image and spectrum, like full-CCD windows.
 MAX_MAP_PIXELS = 256
+
+# Slits whose level 0 files get thumbnails. The windows of slot observations
+# are images, not spectra.
+LEVEL0_SLITS = ('1"', '2"')
 
 # Fewest pixels of a raster column for its own median velocity, and the
 # fraction of the column they must be.
@@ -523,7 +532,7 @@ def _write_gif(canvas, path):
 
 
 def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, equal=False, scale_pixels=None,
-                     nonpositive=NONPOSITIVE):
+                     nonpositive=NONPOSITIVE, bar_label=None):
     """Write one thumbnail as a GIF.
 
     Parameters
@@ -547,8 +556,11 @@ def render_thumbnail(image, extent, labels, title, subtitle, measurement, path, 
     nonpositive : str, default='darkest'
         For 'int', draw values at or below zero 'grey' like missing pixels,
         or in the 'darkest' colour of the scale.
+    bar_label : str, optional
+        Colour bar label, if not the usual one for `measurement`.
     """
     cmap_name, norm, label, extend = _scale(image if scale_pixels is None else image[scale_pixels], measurement)
+    label = label if bar_label is None else bar_label
     cmap = colormaps[cmap_name].with_extremes(bad='0.7')
     if measurement == 'int':
         image = _apply_nonpositive(image, norm, nonpositive)
@@ -586,7 +598,7 @@ def _mean_of_good(values, axis):
 
 
 def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equal=False,
-                    min_good_fraction=MIN_GOOD_FRACTION, nonpositive=NONPOSITIVE):
+                    min_good_fraction=MIN_GOOD_FRACTION, nonpositive=NONPOSITIVE, unit='photons/s'):
     """Write the thumbnail of a full-CCD window as a GIF.
 
     It shows the detector image and the spectrum, both averaged over the
@@ -596,7 +608,7 @@ def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equ
     Parameters
     ----------
     rate : np.ndarray
-        Window in photons/s, shape (n_y, n_x, n_wave), with NaN for bad points.
+        Window in `unit`, shape (n_y, n_x, n_wave), with NaN for bad points.
     wavelength : np.ndarray
         Wavelength in Angstrom, shape (n_wave,).
     extent : tuple
@@ -614,8 +626,11 @@ def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equ
     nonpositive : str, default='darkest'
         Draw values at or below zero 'grey' like missing pixels, or in the
         'darkest' colour of the scale.
+    unit : str, default='photons/s'
+        Unit of `rate`, for the labels.
     """
     size = THUMBNAIL_PIXELS / 100.0
+    bar_unit = unit[0].upper() + unit[1:]
     figure = Figure(figsize=(size, size), dpi=100)
     canvas = FigureCanvasAgg(figure)
     cmap = colormaps['gist_heat'].with_extremes(bad='0.7')
@@ -636,7 +651,7 @@ def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equ
     if has_map:
         window_sum = _window_sum(rate, np.isfinite(rate), min_good_fraction)
         rectangle = _map_rectangle(extent, equal, FULL_CCD_MAP_PANEL)
-        axes = show(window_sum, _scale(window_sum, 'int')[1], rectangle, extent, 'Photons/s')
+        axes = show(window_sum, _scale(window_sum, 'int')[1], rectangle, extent, bar_unit)
         if rectangle[2] < MIN_LABELLED_MAP_WIDTH:
             axes.set_xticks([0.5 * (extent[0] + extent[1])])
         else:
@@ -650,7 +665,7 @@ def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equ
     detector_panel, spectrum_panel = FULL_CCD_PANELS[has_map]
     detector = _mean_of_good(rate, 1)
     axes = show(detector, _detector_norm(detector), detector_panel, (*edges, extent[2], extent[3]),
-                'Photons/s per pixel')
+                f'{bar_unit} per pixel')
     axes.set_xlabel('Wavelength ($\\AA$)', labelpad=1)
     axes.set_ylabel(labels[1])
 
@@ -658,7 +673,7 @@ def render_full_ccd(rate, wavelength, extent, labels, title, subtitle, path, equ
     axes.plot(wavelength, _mean_of_good(rate, (0, 1)), color='k', linewidth=0.6)
     axes.set_xlim(*edges)
     axes.set_xlabel('Wavelength ($\\AA$)')
-    axes.set_ylabel('Mean photons/s per pixel')
+    axes.set_ylabel(f'Mean {unit} per pixel')
 
     figure.suptitle(f'{title}\n{subtitle}', fontsize=11)
     _add_version_note(figure)
@@ -812,6 +827,85 @@ def _raster_thumbnails(data_file, output_root, calibration, exposure, reference_
     return record
 
 
+def _above_median(rate):
+    """Return spectra minus their own median, which removes the detector pedestal and the continuum."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        return rate - np.nanmedian(rate, axis=-1, keepdims=True)
+
+
+def make_level0_thumbnails(level0_file, output_root, min_good_fraction=MIN_GOOD_FRACTION, nonpositive=NONPOSITIVE):
+    """Make the intensity thumbnails of a raster from its level 0 file.
+
+    This is for rasters with no complete level 1 file. Each pixel shows the
+    counts per second above the median of its spectrum, which removes the
+    detector pedestal and the continuum. There is no calibration, dark
+    subtraction or cleaning, so weak lines show detector artefacts, and
+    there are no `vel` or `wid` thumbnails.
+
+    Parameters
+    ----------
+    level0_file : str
+        Path of the level 0 FITS file.
+    output_root : str
+        Top directory of the thumbnails.
+    min_good_fraction, nonpositive
+        As for :func:`make_thumbnails`.
+
+    Returns
+    -------
+    dict
+        Record of the raster, with `level` 0 and for each window its title
+        and thumbnails, or the error if it failed.
+    """
+    _check_options(MIN_PEAK_SNR, min_good_fraction, nonpositive)
+    timestamp = _timestamp(level0_file)
+    date = f'{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}T{timestamp[9:11]}:{timestamp[11:13]}:{timestamp[13:15]}'
+    subtitle = f'{date}  (level 0, uncalibrated)'
+    raster = read_level0(level0_file)
+    record = {'timestamp': timestamp, 'level': 0,
+              'options': {'min_good_fraction': min_good_fraction, 'nonpositive': nonpositive}, 'windows': []}
+    for iwin, window in enumerate(raster.windows):
+        entry = {'iwin': iwin, 'title': window.title, 'files': [], 'fit': None, 'units': 'DN/s'}
+        record['windows'].append(entry)
+        try:
+            above = _above_median(window.rate)
+            heading = f'{window.title.strip()} [{window.low:.2f}-{window.high:.2f} $\\AA$]'
+            path = thumbnail_path(output_root, timestamp, iwin, window.title, 'int')
+            if _is_full_ccd(window.title, window.wavelength.size):
+                render_full_ccd(above, window.wavelength, raster.extent, raster.labels, f'Spectrum - {heading}',
+                                subtitle, path, raster.equal, min_good_fraction, nonpositive, unit='DN/s')
+                entry['layout'] = 'full_ccd'
+            else:
+                intensity = _window_sum(above, np.isfinite(above), min_good_fraction)
+                render_thumbnail(intensity, raster.extent, raster.labels, f'Intensity - {heading}', subtitle, 'int',
+                                 path, raster.equal, nonpositive=nonpositive, bar_label='Counts above background (DN/s)')
+            entry['files'].append(os.path.basename(path))
+        except Exception:
+            entry['error'] = traceback.format_exc(limit=3)
+    return record
+
+
+def _level0_record(timestamp, output_root, directory, reason, min_good_fraction, nonpositive):
+    """Return the record of a raster made from its level 0 file, or of why it could not be made."""
+    try:
+        slit = str(level0_header(timestamp).get('SLIT_ID', '')).strip()
+        if slit not in LEVEL0_SLITS:
+            return {'timestamp': timestamp, 'windows': [],
+                    'skipped': f'{reason}, and the level 0 file is for the {slit} slit or slot'}
+        record = make_level0_thumbnails(fetch_level0(timestamp, directory), output_root, min_good_fraction,
+                                        nonpositive)
+    except RasterUnavailable as error:
+        return {'timestamp': timestamp, 'error': f'{reason}. {error}'}
+    record['level1'] = reason
+    return record
+
+
+def _is_level0_file(path):
+    """Return True for the name of a level 0 FITS file."""
+    return re.search(r'eis_l0_\d{8}_\d{6}\.fits(\.gz)?$', os.path.basename(path)) is not None
+
+
 def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='del_zanna_2025',
                    min_peak_snr=MIN_PEAK_SNR, min_good_fraction=MIN_GOOD_FRACTION, nonpositive=NONPOSITIVE):
     """Fetch a raster if needed, make its thumbnails and write its record.
@@ -819,7 +913,8 @@ def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='d
     Parameters
     ----------
     timestamp_or_file : str
-        Raster start time as 'YYYYMMDD_HHMMSS', or the path of a data file.
+        Raster start time as 'YYYYMMDD_HHMMSS', or the path of a level 1 data
+        file or a level 0 FITS file.
     output_root : str
         Top directory of the thumbnails.
     work_dir : str, optional
@@ -833,19 +928,24 @@ def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='d
     -------
     dict
         Record of the raster, written as `<level 0 file>.json` beside the
-        thumbnails. A raster that could not be processed has `error` set, and
-        is written with `.error` added to the name.
+        thumbnails. A raster with no complete level 1 file is made from its
+        level 0 file, or recorded as `skipped` for a slot observation. A
+        raster that could not be processed has `error` set, and is written
+        with `.error` added to the name.
     """
     started = time.perf_counter()
     local = os.path.exists(timestamp_or_file)
     timestamp = _timestamp(timestamp_or_file)
     with tempfile.TemporaryDirectory(dir=work_dir) as temporary:
         try:
-            data_file = timestamp_or_file if local else fetch_raster(timestamp, temporary)
-            record = make_thumbnails(data_file, output_root, calibration, min_peak_snr, min_good_fraction,
-                                     nonpositive)
+            if local and _is_level0_file(timestamp_or_file):
+                record = make_level0_thumbnails(timestamp_or_file, output_root, min_good_fraction, nonpositive)
+            else:
+                data_file = timestamp_or_file if local else fetch_raster(timestamp, temporary)
+                record = make_thumbnails(data_file, output_root, calibration, min_peak_snr, min_good_fraction,
+                                         nonpositive)
         except RasterUnavailable as error:
-            record = {'timestamp': timestamp, 'error': str(error)}
+            record = _level0_record(timestamp, output_root, temporary, str(error), min_good_fraction, nonpositive)
         except Exception:
             record = {'timestamp': timestamp, 'error': traceback.format_exc(limit=3)}
     record['seconds'] = round(time.perf_counter() - started, 1)
@@ -889,7 +989,7 @@ def _process(arguments):
 def main(argv=None):
     """Make thumbnails from the command line."""
     parser = argparse.ArgumentParser(description='Make EIS thumbnails for the SolarB archive.')
-    parser.add_argument('rasters', nargs='*', help="Timestamps as YYYYMMDD_HHMMSS, or paths of data files")
+    parser.add_argument('rasters', nargs='*', help="Timestamps as YYYYMMDD_HHMMSS, or paths of level 1 data files or level 0 FITS files")
     parser.add_argument('--date', action='append', default=[], help='Add every raster of a day (YYYY-MM-DD)')
     parser.add_argument('--output', required=True, help='Top directory of the thumbnails')
     parser.add_argument('--work', default=None, help='Directory for downloads')

@@ -199,7 +199,7 @@ From the command line, for rasters by time, whole days or files:
 eismaps-solarb-thumbnails --date 2013-01-16 --output thumbnails --processes 8
 ```
 
-Files are downloaded from the MSSL mirror, or from NRL, and deleted afterwards. A JSON file beside each raster's thumbnails records what was done, and rasters already done are skipped unless `--overwrite` is given. Only rasters with level 1 HDF5 files can be processed, which leaves out the 40 and 266 arcsec slot observations.
+Files are downloaded from the MSSL mirror, or from NRL, and deleted afterwards. A JSON file beside each raster's thumbnails records what was done, and rasters already done are skipped unless `--overwrite` is given. Rasters with no complete level 1 file get `int` thumbnails from their level 0 file, which show the counts per second above the median of each spectrum, without calibration. The 40 and 266 arcsec slot observations are skipped.
 
 These options are also keywords of `make_thumbnails()`, with underscores:
 

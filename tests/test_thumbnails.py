@@ -570,3 +570,60 @@ def test_nan_wavelength_spoils_only_its_own_pixel():
 
 def test_exposure_times_within_a_set_use_the_upper_median(tmp_path):
     assert _exposure_choice(write_durations(tmp_path, [[60.0] * 10 + [10.0] * 10]))[1] == 60.0
+
+
+def level0_file(path):
+    from test_level0 import write_level0
+    counts = np.full((4, 6, 16), 550)
+    counts[:, :, 7:9] += 200
+    return write_level0(path, counts, [2_000_000] * 4, n_raster=4)
+
+
+def test_level0_intensity_is_counted_above_the_spectrum_median():
+    # A pedestal of 275 DN/s with a line of 100 DN/s in two pixels sums to 200 DN/s.
+    rate = np.full((2, 3, 16), 275.0)
+    rate[..., 7:9] += 100.0
+    above = thumbnails._above_median(rate)
+    assert np.allclose(thumbnails._window_sum(above, np.isfinite(above), 0.5), 200.0)
+
+
+def test_level0_thumbnails(tmp_path):
+    path = level0_file(tmp_path / 'eis_l0_20130116_093720.fits.gz')
+    record = thumbnails.make_level0_thumbnails(path, str(tmp_path / 'out'))
+    window = record['windows'][0]
+    assert record['level'] == 0 and 'error' not in window and window['units'] == 'DN/s'
+    with Image.open(thumbnail_path(str(tmp_path / 'out'), '20130116_093720', 0, window['title'], 'int')) as gif:
+        assert gif.size == (768, 768)
+
+
+def test_missing_level1_falls_back_to_level0(tmp_path, monkeypatch):
+    source = tmp_path / 'source'
+    source.mkdir()
+    path = level0_file(source / 'eis_l0_20130116_093720.fits.gz')
+
+    def unavailable(*args):
+        raise RasterUnavailable('No complete HDF5 files for 20130116_093720')
+
+    monkeypatch.setattr(thumbnails, 'fetch_raster', unavailable)
+    monkeypatch.setattr(thumbnails, 'level0_header', lambda timestamp: {'SLIT_ID': '2"'})
+    monkeypatch.setattr(thumbnails, 'fetch_level0', lambda timestamp, directory: path)
+    record = thumbnails.process_raster('20130116_093720', str(tmp_path / 'out'))
+    assert record['level'] == 0 and record['level1'].startswith('No complete HDF5')
+    assert thumbnails._is_done(str(tmp_path / 'out'), '20130116_093720')
+
+
+def test_slot_observation_is_skipped_and_counts_as_done(tmp_path, monkeypatch):
+    def unavailable(*args):
+        raise RasterUnavailable('No complete HDF5 files for 20130116_093720')
+
+    monkeypatch.setattr(thumbnails, 'fetch_raster', unavailable)
+    monkeypatch.setattr(thumbnails, 'level0_header', lambda timestamp: {'SLIT_ID': '40"'})
+    record = thumbnails.process_raster('20130116_093720', str(tmp_path))
+    assert 'skipped' in record and 'error' not in record
+    assert thumbnails._is_done(str(tmp_path), '20130116_093720')
+
+
+def test_level0_file_given_directly(tmp_path):
+    path = level0_file(tmp_path / 'eis_l0_20130116_093720.fits.gz')
+    record = thumbnails.process_raster(path, str(tmp_path / 'out'))
+    assert record['level'] == 0 and 'error' not in record
