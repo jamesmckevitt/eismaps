@@ -2,7 +2,9 @@
 
 Level 0 data are raw counts (DN), with no dark subtraction, calibration,
 cleaning or wavelength correction. The binary table has one row per exposure,
-with the exposures of each raster position in turn, and one column per window.
+`NEXP` in all, with the `NEXP_PRP` exposures of each position in turn, and one
+column per window. A sit-and-stare observation has `NRASTER` 1 and many
+positions in time.
 """
 
 import re
@@ -101,20 +103,21 @@ def read_level0(path):
     Raises
     ------
     ValueError
-        If the number of rows does not match the raster.
+        If the number of rows does not match the exposures.
     """
     with fits.open(path) as hdul:
         primary, table = hdul[0].header, hdul[1]
         n_raster = int(primary['NRASTER'])
         n_exposures = int(primary.get('NEXP_PRP') or 1)
         n_rows = len(table.data)
-        if n_rows != n_raster * n_exposures:
-            raise ValueError(f'{n_rows} rows for {n_raster} positions of {n_exposures} exposures')
+        if n_rows != int(primary.get('NEXP', n_rows)) or n_rows % n_exposures:
+            raise ValueError(f'{n_rows} rows for {primary.get("NEXP")} exposures, {n_exposures} per position')
+        n_positions = n_rows // n_exposures
 
-        duration = _column(table, 'mhc_dur').reshape(n_raster, n_exposures) / 1e6
+        duration = _column(table, 'mhc_dur').reshape(n_positions, n_exposures) / 1e6
         medians = [_upper_median(d[d > 0]) if (d > 0).any() else 0.0 for d in duration.T]
         exposure = int(np.argmax(medians))
-        rows = np.arange(n_rows).reshape(n_raster, n_exposures)[:, exposure]
+        rows = np.arange(n_rows).reshape(n_positions, n_exposures)[:, exposure]
         seconds = duration[:, exposure]
         per_second = np.where(seconds > 0, 1.0 / np.where(seconds > 0, seconds, 1.0), np.nan)
 
@@ -142,7 +145,7 @@ def read_level0(path):
             width = float(primary['FOVX'])
             extent = (x_centre - 0.5 * width, x_centre + 0.5 * width, bottom, top)
             labels, equal = ('Solar-X (arcsec)', 'Solar-Y (arcsec)'), True
-        elif len(rows) == 1:
+        elif n_positions == 1:
             width = _first_number(slit) if re.match(r'\s*\d', slit) else abs(step_x)
             extent = (x_centre - 0.5 * width, x_centre + 0.5 * width, bottom, top)
             labels, equal = ('Solar-X (arcsec)', 'Solar-Y (arcsec)'), True

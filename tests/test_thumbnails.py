@@ -174,8 +174,9 @@ def test_failure_does_not_replace_a_good_record(tmp_path, monkeypatch):
         raise RasterUnavailable('server down')
 
     monkeypatch.setattr('eismaps.thumbnails.fetch_raster', unavailable)
+    monkeypatch.setattr('eismaps.thumbnails.level0_header', unavailable)
     record = process_raster(timestamp, root, str(tmp_path))
-    assert record['error'] == 'server down'
+    assert record['error'].startswith('server down')
     assert _is_done(root, timestamp)
     assert os.path.exists(path + '.error')
 
