@@ -4,6 +4,7 @@ from eismaps.fit import fit, list_fit_lines
 from eismaps.maps import make_maps
 from eismaps.calibration import apply_calibration
 from eismaps.full_disk import make_helioprojective_map, make_carrington_map
+from eismaps.thumbnails import make_thumbnails
 
 __all__ = [
 	'apply_calibration',
@@ -12,4 +13,5 @@ __all__ = [
 	'make_carrington_map',
 	'make_helioprojective_map',
 	'make_maps',
+	'make_thumbnails',
 ]

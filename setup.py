@@ -7,7 +7,7 @@ README = Path(__file__).with_name('README.md').read_text(encoding='utf-8')
 
 setup(
     name='eismaps',
-    version='0.6.0',
+    version='0.7.0',
     author='James McKevitt',
     author_email='jm2@mssl.ucl.ac.uk',
     description='A toolkit for producing level 3 maps from Hinode/EIS spacecraft data.',
@@ -27,8 +27,14 @@ setup(
         ]
     },
     install_requires=[
+        'astropy',
+        'certifi',
         'eispac>=0.99.3',
+        'h5py',
+        'matplotlib>=3.5',
         'numpy>=1.24',
+        'pillow>=9.1',
+        'scipy',
         'sunkit-image>=0.5.1',
     ],
     python_requires='>=3.9',
@@ -42,6 +48,7 @@ setup(
     entry_points={
         'console_scripts': [
             'eismaps-sync-calibration=eismaps.calibration:sync_solarsoft_calibration_data_cli',
+            'eismaps-solarb-thumbnails=eismaps.thumbnails:main',
         ],
     },
 )

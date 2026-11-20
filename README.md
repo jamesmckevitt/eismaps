@@ -45,6 +45,7 @@ from eismaps import (
     make_carrington_map,
     make_helioprojective_map,
     make_maps,
+    make_thumbnails,
 )
 ```
 
@@ -175,6 +176,38 @@ fd_chi2 = extras['chi2']
 - by default a NaN raster pixel makes every output pixel it overlaps NaN, as in `reproject_exact`. `skip_nan=True` leaves NaN pixels out, so each output pixel averages the valid pixels it overlaps (needs `algorithm='exact'`).
 
 `make_carrington_map()` makes a Carrington map instead of a helioprojective one.
+
+### SolarB Thumbnails
+
+`make_thumbnails()` makes the quicklook images of a raster for the [MSSL SolarB archive](https://solarb.mssl.ucl.ac.uk/SolarB/), one GIF per spectral window and quantity, in the archive's layout:
+
+```text
+YYYY/MM/DD/eis_l0_<time>.fits/eis_l0_<time>.fits_line_NN_<title>.<int|vel|wid>.gif
+```
+
+`int` is the window summed over wavelength, calibrated with Del Zanna (2025) by default. `vel` and `wid` are the Doppler velocity and width from a Gaussian fit of the line named in the window title, or of the strongest line in a narrow window whose title names no line with a template. Velocities are relative to the median of each raster column. Full-CCD windows get a detector image and spectrum in photons/s instead.
+
+```python
+from eismaps import make_thumbnails
+
+record = make_thumbnails('eis_20130116_093720.data.h5', 'thumbnails')
+```
+
+From the command line, for rasters by time, whole days or files:
+
+```bash
+eismaps-solarb-thumbnails --date 2013-01-16 --output thumbnails --processes 8
+```
+
+Files are downloaded from the MSSL mirror, or from NRL, and deleted afterwards. A JSON file beside each raster's thumbnails records what was done, and rasters already done are skipped unless `--overwrite` is given. Rasters with no complete level 1 file get `int` thumbnails from their level 0 file, which show the counts per second above the median of each spectrum, without calibration. The 40 and 266 arcsec slot observations are skipped.
+
+These options are also keywords of `make_thumbnails()`, with underscores:
+
+- `--min-peak-snr`: smallest fitted peak, in units of its error, for a velocity or width to be shown (default 3).
+- `--min-good-fraction`: fraction of good points a pixel needs for its summed intensity (default 0.5).
+- `--nonpositive`: `darkest` (default) or `grey`, the colour of summed intensities at or below zero.
+
+The fits use `eismaps.batched_fit.fit_cube`, which fits all the spectra of a window at once. It takes an EISPAC template and its parinfo, and returns an EISPAC fit result.
 
 ## Typical API Flow
 
