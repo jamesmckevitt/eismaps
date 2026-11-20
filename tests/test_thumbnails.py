@@ -628,3 +628,19 @@ def test_level0_file_given_directly(tmp_path):
     path = level0_file(tmp_path / 'eis_l0_20130116_093720.fits.gz')
     record = thumbnails.process_raster(path, str(tmp_path / 'out'))
     assert record['level'] == 0 and 'error' not in record
+
+
+def test_unreadable_level0_file_gives_an_error_record(tmp_path, monkeypatch):
+    def unavailable(*args):
+        raise RasterUnavailable('No complete HDF5 files for 20130116_093720')
+
+    def broken(path):
+        raise KeyError('NWIN')
+
+    monkeypatch.setattr(thumbnails, 'fetch_raster', unavailable)
+    monkeypatch.setattr(thumbnails, 'level0_header', lambda timestamp: {'SLIT_ID': '2"'})
+    monkeypatch.setattr(thumbnails, 'fetch_level0', lambda timestamp, directory: 'eis_l0_20130116_093720.fits.gz')
+    monkeypatch.setattr(thumbnails, 'read_level0', broken)
+    record = thumbnails.process_raster('20130116_093720', str(tmp_path))
+    assert 'NWIN' in record['error']
+    assert os.path.exists(thumbnails._record_path(str(tmp_path), '20130116_093720') + '.error')

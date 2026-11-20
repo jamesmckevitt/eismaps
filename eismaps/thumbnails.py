@@ -897,6 +897,8 @@ def _level0_record(timestamp, output_root, directory, reason, min_good_fraction,
                                         nonpositive)
     except RasterUnavailable as error:
         return {'timestamp': timestamp, 'error': f'{reason}. {error}'}
+    except Exception:
+        return {'timestamp': timestamp, 'error': f'{reason}. ' + traceback.format_exc(limit=3)}
     record['level1'] = reason
     return record
 

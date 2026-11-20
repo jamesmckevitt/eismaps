@@ -162,7 +162,7 @@ def level0_header(timestamp):
                 cards = [text[i:i + 80] for i in range(0, len(text) - 79, 80)]
                 if end in cards:
                     return fits.Header.fromstring(text[:80 * (cards.index(end) + 1)].decode('ascii', 'replace'))
-    except (urllib.error.URLError, http.client.HTTPException, OSError, zlib.error) as error:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, zlib.error, ValueError) as error:
         raise RasterUnavailable(f'No level 0 file for {timestamp}') from error
     raise RasterUnavailable(f'No level 0 header found for {timestamp}')
 
