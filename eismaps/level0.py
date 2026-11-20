@@ -122,8 +122,11 @@ def read_level0(path):
         per_second = np.where(seconds > 0, 1.0 / np.where(seconds > 0, seconds, 1.0), np.nan)
 
         step_x = float(primary.get('CDELT1') or 0.0)
-        # Scans step from west to east, so their columns are reversed to run east to west.
-        order = slice(None, None, -1) if n_raster > 1 and step_x < 0 else slice(None)
+        # The fine mirror position grows as a scan steps from west to east, so
+        # such scans are reversed to run east to west. The sign of CDELT1 does
+        # not say this in early files.
+        mirror = _column(table, 'fmirr')[rows]
+        order = slice(None, None, -1) if n_raster > 1 and mirror[-1] > mirror[0] else slice(None)
 
         windows = []
         header = table.header

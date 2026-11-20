@@ -7,7 +7,7 @@ from astropy.io import fits
 from eismaps.level0 import CLOCK_WRAP, SATURATED, TICKS_PER_SECOND, read_level0
 
 
-def write_level0(path, counts, durations, n_raster, n_exposures=1, step_x=-2.0, ticks=None, slit='2"'):
+def write_level0(path, counts, durations, n_raster, n_exposures=1, step_x=-2.0, ticks=None, slit='2"', mirror=None):
     """Write a one-window level 0 file. `counts` has shape (n_rows, n_y, n_wave)."""
     n_rows, n_y, n_wave = counts.shape
     primary = fits.PrimaryHDU()
@@ -16,7 +16,9 @@ def write_level0(path, counts, durations, n_raster, n_exposures=1, step_x=-2.0, 
     columns = [fits.Column(name='Fe XII 195.120', format=f'{n_y * n_wave}I', dim=f'({n_wave},{n_y})',
                            array=counts.astype(np.int16)),
                fits.Column(name='mhc_dur', format='J', array=np.asarray(durations, dtype=np.int32)),
-               fits.Column(name='TI_1', format='D', array=np.zeros(n_rows) if ticks is None else np.asarray(ticks))]
+               fits.Column(name='TI_1', format='D', array=np.zeros(n_rows) if ticks is None else np.asarray(ticks)),
+               fits.Column(name='FMIRR', format='I', array=np.repeat(np.arange(n_rows // n_exposures) * 4 + 1000, n_exposures)
+                           if mirror is None else np.asarray(mirror))]
     table = fits.BinTableHDU.from_columns(columns)
     table.header.update(TWMIN1=194.8, TWMAX1=195.4, TDELT1='(0.022318068,1.00000,1.00000)')
     fits.HDUList([primary, table]).writeto(path)
@@ -75,3 +77,13 @@ def test_rows_must_hold_whole_positions(tmp_path):
     counts = np.full((5, 3, 4), 500)
     with pytest.raises(ValueError):
         read_level0(write_level0(tmp_path / 'f.fits.gz', counts, [1_000_000] * 5, n_raster=3, n_exposures=2))
+
+
+def test_scan_order_comes_from_the_mirror_not_cdelt1(tmp_path):
+    # Early files give a positive CDELT1 for scans that still step west to east.
+    counts = np.stack([np.full((3, 4), 100 * (row + 1)) for row in range(3)])
+    raster = read_level0(write_level0(tmp_path / 'g.fits.gz', counts, [1_000_000] * 3, n_raster=3, step_x=1.0))
+    assert raster.windows[0].rate[0, :, 0].tolist() == [300.0, 200.0, 100.0]
+    # A scan with the mirror stepping the other way is kept in time order.
+    raster = read_level0(write_level0(tmp_path / 'h.fits.gz', counts, [1_000_000] * 3, n_raster=3, mirror=[1008, 1004, 1000]))
+    assert raster.windows[0].rate[0, :, 0].tolist() == [100.0, 200.0, 300.0]
