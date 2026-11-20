@@ -10,13 +10,13 @@ from eismaps import archive
 
 
 def listing_of(names):
-    def urlopen(url, timeout):
+    def urlopen(url, timeout, context=None):
         return io.BytesIO(''.join(f'<a href="{n}">{n}</a>' for n in names).encode())
     return urlopen
 
 
 def http_error(code):
-    def urlopen(url, timeout):
+    def urlopen(url, timeout, context=None):
         raise urllib.error.HTTPError(url, code, 'error', None, None)
     return urlopen
 
@@ -40,7 +40,7 @@ def test_outage_is_not_an_empty_day(monkeypatch):
 
 def test_one_server_down_is_an_outage(monkeypatch):
     # A 404 from one server says nothing about a day the other could not list.
-    def urlopen(url, timeout):
+    def urlopen(url, timeout, context=None):
         if 'mssl' in url:
             raise urllib.error.HTTPError(url, 404, 'error', None, None)
         raise urllib.error.URLError('timed out')
@@ -56,7 +56,7 @@ def test_truncated_file_is_refused_and_the_next_server_used(tmp_path, monkeypatc
         f['x'] = [1, 2, 3]
     whole = good.read_bytes()
 
-    def urlopen(url, timeout):
+    def urlopen(url, timeout, context=None):
         return io.BytesIO(whole[:200] if 'mssl' in url else whole)
 
     monkeypatch.setattr('urllib.request.urlopen', urlopen)
@@ -66,6 +66,18 @@ def test_truncated_file_is_refused_and_the_next_server_used(tmp_path, monkeypatc
 
 
 def test_no_complete_copy_raises(tmp_path, monkeypatch):
-    monkeypatch.setattr('urllib.request.urlopen', lambda url, timeout: io.BytesIO(b'not hdf5'))
+    monkeypatch.setattr('urllib.request.urlopen', lambda url, timeout, context=None: io.BytesIO(b'not hdf5'))
     with pytest.raises(archive.RasterUnavailable):
         archive.fetch_raster('20251002_200728', str(tmp_path))
+
+
+def test_requests_use_the_certifi_roots(tmp_path, monkeypatch):
+    contexts = []
+
+    def urlopen(url, timeout, context=None):
+        contexts.append(context)
+        return io.BytesIO(b'')
+
+    monkeypatch.setattr('urllib.request.urlopen', urlopen)
+    archive.list_rasters('2013-01-16')
+    assert contexts and all(c is archive.CONTEXT for c in contexts)

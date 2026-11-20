@@ -27,6 +27,7 @@ setup(
         ]
     },
     install_requires=[
+        'certifi',
         'eispac>=0.99.3',
         'h5py',
         'matplotlib>=3.5',

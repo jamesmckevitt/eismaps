@@ -8,13 +8,19 @@ before it is accepted.
 import http.client
 import os
 import re
+import ssl
 import urllib.error
 import urllib.request
 
+import certifi
 import h5py
 
 SERVERS = ('https://vsolar.mssl.ucl.ac.uk/eispac/hdf5', 'https://eis.nrl.navy.mil/level1/hdf5')
 TIMEOUT = 120  # seconds
+
+# Certificates are checked against certifi's list of trusted roots, as some
+# systems lack the root that signs NRL's certificate.
+CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 class RasterUnavailable(Exception):
@@ -47,7 +53,7 @@ def list_rasters(date):
     found = set()
     for server in SERVERS:
         try:
-            with urllib.request.urlopen(f'{server}/{_day_path(day)}/', timeout=TIMEOUT) as response:
+            with urllib.request.urlopen(f'{server}/{_day_path(day)}/', timeout=TIMEOUT, context=CONTEXT) as response:
                 listing = response.read().decode('utf-8', 'replace')
         except urllib.error.HTTPError as error:
             # A day with no observations has no directory.
@@ -63,7 +69,7 @@ def list_rasters(date):
 def _download(url, path):
     """Download a file, replacing `path` only when complete."""
     partial = path + '.part'
-    with urllib.request.urlopen(url, timeout=TIMEOUT) as response, open(partial, 'wb') as output:
+    with urllib.request.urlopen(url, timeout=TIMEOUT, context=CONTEXT) as response, open(partial, 'wb') as output:
         while True:
             block = response.read(1 << 22)
             if not block:
