@@ -115,23 +115,34 @@ def fetch_raster(timestamp, directory):
     Raises
     ------
     RasterUnavailable
-        If no server has complete files.
+        If every server answers but none has complete files.
+    ConnectionError
+        If no server has complete files and one did not answer, so that the
+        raster can be tried again later.
     """
     os.makedirs(directory, exist_ok=True)
     paths = {kind: os.path.join(directory, f'eis_{timestamp}.{kind}.h5') for kind in ('data', 'head')}
     if all(os.path.exists(p) and _readable(p) for p in paths.values()):
         return paths['data']
+    failures = []
     for server in SERVERS:
         try:
             for kind, path in paths.items():
                 _download(f'{server}/{_day_path(timestamp)}/eis_{timestamp}.{kind}.h5', path)
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                failures.append(f'{server} gave status {error.code}')
+            continue
         except (urllib.error.URLError, http.client.HTTPException, OSError):
+            failures.append(f'{server} did not answer')
             continue
         if all(_readable(p) for p in paths.values()):
             return paths['data']
     for path in paths.values():
         if os.path.exists(path):
             os.remove(path)
+    if failures:
+        raise ConnectionError(f'No complete HDF5 files for {timestamp}, as ' + ' and '.join(failures))
     raise RasterUnavailable(f'No complete HDF5 files for {timestamp}')
 
 

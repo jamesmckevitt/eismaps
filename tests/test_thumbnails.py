@@ -644,3 +644,17 @@ def test_unreadable_level0_file_gives_an_error_record(tmp_path, monkeypatch):
     record = thumbnails.process_raster('20130116_093720', str(tmp_path))
     assert 'NWIN' in record['error']
     assert os.path.exists(thumbnails._record_path(str(tmp_path), '20130116_093720') + '.error')
+
+
+def test_outage_is_retried_not_made_from_level0(tmp_path, monkeypatch):
+    def outage(*args):
+        raise ConnectionError('No complete HDF5 files for 20130116_093720, as a server did not answer')
+
+    def not_called(*args):
+        raise AssertionError('level 0 must not be used during an outage')
+
+    monkeypatch.setattr(thumbnails, 'fetch_raster', outage)
+    monkeypatch.setattr(thumbnails, 'level0_header', not_called)
+    record = thumbnails.process_raster('20130116_093720', str(tmp_path))
+    assert 'did not answer' in record['error']
+    assert not thumbnails._is_done(str(tmp_path), '20130116_093720')

@@ -121,3 +121,21 @@ def test_truncated_level0_file_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr('urllib.request.urlopen', lambda url, timeout, context=None: io.BytesIO(whole))
     path = archive.fetch_level0('20130116_093720', str(tmp_path / 'download'))
     assert path.endswith('eis_l0_20130116_093720.fits.gz')
+
+
+def test_server_that_does_not_answer_is_an_outage(tmp_path, monkeypatch):
+    # The raster must be tried again later rather than made from level 0.
+    def urlopen(url, timeout, context=None):
+        if 'mssl' in url:
+            raise urllib.error.HTTPError(url, 404, 'error', None, None)
+        raise urllib.error.URLError('timed out')
+
+    monkeypatch.setattr('urllib.request.urlopen', urlopen)
+    with pytest.raises(ConnectionError):
+        archive.fetch_raster('20251002_200728', str(tmp_path))
+
+
+def test_missing_everywhere_is_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr('urllib.request.urlopen', http_error(404))
+    with pytest.raises(archive.RasterUnavailable):
+        archive.fetch_raster('20251002_200728', str(tmp_path))

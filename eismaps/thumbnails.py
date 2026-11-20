@@ -948,6 +948,8 @@ def process_raster(timestamp_or_file, output_root, work_dir=None, calibration='d
                                          nonpositive)
         except RasterUnavailable as error:
             record = _level0_record(timestamp, output_root, temporary, str(error), min_good_fraction, nonpositive)
+        except ConnectionError as error:
+            record = {'timestamp': timestamp, 'error': str(error)}
         except Exception:
             record = {'timestamp': timestamp, 'error': traceback.format_exc(limit=3)}
     record['seconds'] = round(time.perf_counter() - started, 1)
