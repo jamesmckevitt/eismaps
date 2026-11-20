@@ -3,8 +3,12 @@
 import io
 import urllib.error
 
+import gzip
+
 import h5py
+import numpy as np
 import pytest
+from astropy.io import fits
 
 from eismaps import archive
 
@@ -81,3 +85,39 @@ def test_requests_use_the_certifi_roots(tmp_path, monkeypatch):
     monkeypatch.setattr('urllib.request.urlopen', urlopen)
     archive.list_rasters('2013-01-16')
     assert contexts and all(c is archive.CONTEXT for c in contexts)
+
+
+def test_rasters_with_only_a_level0_file_are_listed(monkeypatch):
+    def urlopen(url, timeout, context=None):
+        if 'level0' in url:
+            return io.BytesIO(b'<a href="eis_l0_20130116_093720.fits.gz">x</a><a href="eis_l0_20130116_120000.fits.gz">y</a>')
+        return io.BytesIO(b'<a href="eis_20130116_093720.data.h5">z</a>')
+
+    monkeypatch.setattr('urllib.request.urlopen', urlopen)
+    assert archive.list_rasters('2013-01-16') == ['20130116_093720', '20130116_120000']
+
+
+def level0_bytes(tmp_path):
+    primary = fits.PrimaryHDU()
+    primary.header['SLIT_ID'] = '40"'
+    primary.header['NWIN'] = 1
+    table = fits.BinTableHDU.from_columns([fits.Column(name='Fe XII 195.120', format='4I', array=np.ones((3, 4), dtype=np.int16))])
+    path = tmp_path / 'eis_l0_20130116_093720.fits.gz'
+    fits.HDUList([primary, table]).writeto(path)
+    return path.read_bytes()
+
+
+def test_level0_header_is_read_from_the_start_of_the_file(tmp_path, monkeypatch):
+    whole = level0_bytes(tmp_path)
+    monkeypatch.setattr('urllib.request.urlopen', lambda url, timeout, context=None: io.BytesIO(whole))
+    assert archive.level0_header('20130116_093720')['SLIT_ID'] == '40"'
+
+
+def test_truncated_level0_file_is_refused(tmp_path, monkeypatch):
+    whole = level0_bytes(tmp_path)
+    monkeypatch.setattr('urllib.request.urlopen', lambda url, timeout, context=None: io.BytesIO(whole[:len(whole) // 2]))
+    with pytest.raises(archive.RasterUnavailable):
+        archive.fetch_level0('20130116_093720', str(tmp_path / 'download'))
+    monkeypatch.setattr('urllib.request.urlopen', lambda url, timeout, context=None: io.BytesIO(whole))
+    path = archive.fetch_level0('20130116_093720', str(tmp_path / 'download'))
+    assert path.endswith('eis_l0_20130116_093720.fits.gz')

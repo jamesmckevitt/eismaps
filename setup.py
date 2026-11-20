@@ -27,6 +27,7 @@ setup(
         ]
     },
     install_requires=[
+        'astropy',
         'certifi',
         'eispac>=0.99.3',
         'h5py',

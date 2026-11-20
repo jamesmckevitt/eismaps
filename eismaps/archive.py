@@ -1,8 +1,8 @@
-"""Finding and downloading EIS level 1 HDF5 files.
+"""Finding and downloading EIS level 1 HDF5 files and level 0 FITS files.
 
-Files are taken from the MSSL mirror if a complete copy is there, and from NRL
-otherwise. Some files on the mirror are truncated, so each download is opened
-before it is accepted.
+Level 1 files are taken from the MSSL mirror if a complete copy is there, and
+from NRL otherwise. Some files on the mirror are truncated, so each download is
+opened before it is accepted. Level 0 files come from the archive at RAL.
 """
 
 import http.client
@@ -11,12 +11,18 @@ import re
 import ssl
 import urllib.error
 import urllib.request
+import zlib
 
 import certifi
 import h5py
+from astropy.io import fits
 
 SERVERS = ('https://vsolar.mssl.ucl.ac.uk/eispac/hdf5', 'https://eis.nrl.navy.mil/level1/hdf5')
+LEVEL0_SERVER = 'http://solar.ads.rl.ac.uk/MSSL-data/eis/level0'
 TIMEOUT = 120  # seconds
+
+# Largest part of a level 0 file read to find its primary header, in bytes.
+MAX_HEADER_BYTES = 1 << 20
 
 # Certificates are checked against certifi's list of trusted roots, as some
 # systems lack the root that signs NRL's certificate.
@@ -24,7 +30,7 @@ CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 class RasterUnavailable(Exception):
-    """No complete HDF5 files for a raster on any server."""
+    """No complete file for a raster on any server."""
 
 
 def _day_path(timestamp):
@@ -33,6 +39,8 @@ def _day_path(timestamp):
 
 def list_rasters(date):
     """Return the timestamps of the rasters of a day on any server.
+
+    Rasters with only a level 0 file are included.
 
     Parameters
     ----------
@@ -51,7 +59,9 @@ def list_rasters(date):
     """
     day = date.replace('-', '')
     found = set()
-    for server in SERVERS:
+    patterns = [(server, r'eis_(\d{8}_\d{6})\.data\.h5') for server in SERVERS]
+    patterns.append((LEVEL0_SERVER, r'eis_l0_(\d{8}_\d{6})\.fits(?:\.gz)?"'))
+    for server, pattern in patterns:
         try:
             with urllib.request.urlopen(f'{server}/{_day_path(day)}/', timeout=TIMEOUT, context=CONTEXT) as response:
                 listing = response.read().decode('utf-8', 'replace')
@@ -62,7 +72,7 @@ def list_rasters(date):
             raise ConnectionError(f'{server} gave status {error.code} for {date}') from error
         except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
             raise ConnectionError(f'{server} did not answer for {date}') from error
-        found.update(re.findall(r'eis_(\d{8}_\d{6})\.data\.h5', listing))
+        found.update(re.findall(pattern, listing))
     return sorted(found)
 
 
@@ -123,3 +133,77 @@ def fetch_raster(timestamp, directory):
         if os.path.exists(path):
             os.remove(path)
     raise RasterUnavailable(f'No complete HDF5 files for {timestamp}')
+
+
+def _level0_url(timestamp):
+    return f'{LEVEL0_SERVER}/{_day_path(timestamp)}/eis_l0_{timestamp}.fits.gz'
+
+
+def level0_header(timestamp):
+    """Return the primary header of a raster's level 0 file without downloading all of it.
+
+    Raises
+    ------
+    RasterUnavailable
+        If the file cannot be read.
+    """
+    end = b'END'.ljust(80)
+    inflate = zlib.decompressobj(wbits=31)
+    text = b''
+    read = 0
+    try:
+        with urllib.request.urlopen(_level0_url(timestamp), timeout=TIMEOUT, context=CONTEXT) as response:
+            while read < MAX_HEADER_BYTES:
+                block = response.read(1 << 16)
+                if not block:
+                    break
+                read += len(block)
+                text += inflate.decompress(block)
+                cards = [text[i:i + 80] for i in range(0, len(text) - 79, 80)]
+                if end in cards:
+                    return fits.Header.fromstring(text[:80 * (cards.index(end) + 1)].decode('ascii', 'replace'))
+    except (urllib.error.URLError, http.client.HTTPException, OSError, zlib.error) as error:
+        raise RasterUnavailable(f'No level 0 file for {timestamp}') from error
+    raise RasterUnavailable(f'No level 0 header found for {timestamp}')
+
+
+def _readable_level0(path):
+    """Return True if a level 0 file opens and its data can be read."""
+    try:
+        with fits.open(path) as hdul:
+            hdul[1].data.field(0)
+        return True
+    except (OSError, ValueError, IndexError, EOFError, TypeError):
+        return False
+
+
+def fetch_level0(timestamp, directory):
+    """Download the level 0 file of a raster.
+
+    Parameters
+    ----------
+    timestamp : str
+        Raster start time as 'YYYYMMDD_HHMMSS'.
+    directory : str
+        Directory for the file.
+
+    Returns
+    -------
+    str
+        Path of the level 0 file.
+
+    Raises
+    ------
+    RasterUnavailable
+        If there is no complete file.
+    """
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, f'eis_l0_{timestamp}.fits.gz')
+    try:
+        _download(_level0_url(timestamp), path)
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
+        raise RasterUnavailable(f'No level 0 file for {timestamp}') from error
+    if not _readable_level0(path):
+        os.remove(path)
+        raise RasterUnavailable(f'Incomplete level 0 file for {timestamp}')
+    return path
